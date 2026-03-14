@@ -92,7 +92,10 @@ func deepMerge(dst, src map[string]any, prefix string) {
 		}
 
 		// Default: profile wins (scalars, arrays, type mismatches)
-		dst[key] = srcVal
+		// Clone maps to avoid aliasing the caller's input — without this,
+		// nested maps from common end up in result by reference, and the
+		// second deepMerge pass (for profile) mutates them.
+		dst[key] = cloneValue(srcVal)
 		if exists {
 			log.Printf("merge: override %s", path)
 		} else {
@@ -122,6 +125,35 @@ func applyDeletions(dst, profile map[string]any, prefix string) {
 			applyDeletions(dstMap, profileMap, path)
 		}
 	}
+}
+
+// cloneValue returns a deep copy of v if it is a map or slice,
+// preventing aliasing between merge inputs and the result.
+func cloneValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return cloneMap(val)
+	case []any:
+		c := make([]any, len(val))
+		for i, item := range val {
+			c[i] = cloneValue(item)
+		}
+		return c
+	default:
+		return v
+	}
+}
+
+// cloneMap returns a deep copy of a map[string]any.
+func cloneMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]any, len(m))
+	for k, v := range m {
+		c[k] = cloneValue(v)
+	}
+	return c
 }
 
 // toSlice converts a JSON array ([]any) to check if it's an array.

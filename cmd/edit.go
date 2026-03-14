@@ -34,9 +34,9 @@ var editCmd = &cobra.Command{
 		settingsPath := filepath.Join(cfg.ProfileDir(name), "settings.json")
 
 		// Find editor: VISUAL > EDITOR > vi
-		editor := os.Getenv("VISUAL")
+		editor := strings.TrimSpace(os.Getenv("VISUAL"))
 		if editor == "" {
-			editor = os.Getenv("EDITOR")
+			editor = strings.TrimSpace(os.Getenv("EDITOR"))
 		}
 		if editor == "" {
 			editor = "vi"
@@ -44,10 +44,12 @@ var editCmd = &cobra.Command{
 
 		log.Printf("edit: opening '%s' with editor '%s'", settingsPath, editor)
 
-		// Open editor — split editor string so multi-word values like
-		// "code --wait" work correctly.
-		parts := strings.Fields(editor)
-		editorCmd := exec.Command(parts[0], append(parts[1:], settingsPath)...)
+		// Use sh -c to let the shell parse the editor command.
+		// This correctly handles quoted paths with spaces (e.g.,
+		// EDITOR='"/Applications/Sublime Text.app/.../subl" -w')
+		// and multi-word values like "code --wait".
+		// "$@" safely passes the file path as a positional argument.
+		editorCmd := exec.Command("sh", "-c", editor+` "$@"`, "--", settingsPath)
 		editorCmd.Stdin = os.Stdin
 		editorCmd.Stdout = os.Stdout
 		editorCmd.Stderr = os.Stderr

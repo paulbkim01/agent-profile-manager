@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/paulbkim/agent-profile-manager/internal/generate"
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
 )
+
+// shellQuote escapes a string for safe use inside POSIX single quotes.
+// The standard technique: replace each ' with '\'' (end quote, literal ', start quote).
+func shellQuote(s string) string {
+	return strings.ReplaceAll(s, "'", `'\''`)
+}
 
 var useGlobal bool
 
@@ -85,8 +92,8 @@ var useCmd = &cobra.Command{
 		// When --global is set on a TTY, the user just wants to set the default,
 		// so suppress the export noise.
 		if !(isTTY && useGlobal) {
-			fmt.Printf("export APM_PROFILE='%s'\n", name)
-			fmt.Printf("export CLAUDE_CONFIG_DIR='%s'\n", genDir)
+			fmt.Printf("export APM_PROFILE='%s'\n", shellQuote(name))
+			fmt.Printf("export CLAUDE_CONFIG_DIR='%s'\n", shellQuote(genDir))
 		}
 
 		return nil

@@ -370,25 +370,61 @@ func TestNilInputs(t *testing.T) {
 }
 
 func TestDeepMergeDoesNotMutateInputs(t *testing.T) {
+	// Test nested maps — the real bug was that common's nested objects
+	// were aliased into result, then mutated by the profile merge pass.
 	common := map[string]any{
 		"model": "sonnet",
+		"statusLine": map[string]any{
+			"enabled": true,
+			"format":  "default",
+		},
+		"env": map[string]any{
+			"FOO": "bar",
+		},
 	}
 	profile := map[string]any{
 		"model": "opus",
+		"statusLine": map[string]any{
+			"enabled": false,
+		},
+		"env": map[string]any{
+			"BAZ": "qux",
+		},
 	}
 
-	// Copy original values
-	commonModel := common["model"]
-	profileModel := profile["model"]
+	// Snapshot common's nested maps before merge
+	commonStatusEnabled := common["statusLine"].(map[string]any)["enabled"]
+	commonStatusFormat := common["statusLine"].(map[string]any)["format"]
+	commonEnvFoo := common["env"].(map[string]any)["FOO"]
 
-	_ = Settings(common, profile)
+	result := Settings(common, profile)
 
-	// Verify inputs were not mutated
-	if common["model"] != commonModel {
-		t.Error("Settings mutated common map")
+	// Verify result is correct (profile overrides)
+	statusLine := result["statusLine"].(map[string]any)
+	if statusLine["enabled"] != false {
+		t.Errorf("expected statusLine.enabled=false in result, got %v", statusLine["enabled"])
 	}
-	if profile["model"] != profileModel {
-		t.Error("Settings mutated profile map")
+	if statusLine["format"] != "default" {
+		t.Errorf("expected statusLine.format='default' in result (inherited from common), got %v", statusLine["format"])
+	}
+
+	// Verify common was NOT mutated
+	if common["model"] != "sonnet" {
+		t.Error("Settings mutated common['model']")
+	}
+	if common["statusLine"].(map[string]any)["enabled"] != commonStatusEnabled {
+		t.Errorf("Settings mutated common['statusLine']['enabled']: was %v, now %v",
+			commonStatusEnabled, common["statusLine"].(map[string]any)["enabled"])
+	}
+	if common["statusLine"].(map[string]any)["format"] != commonStatusFormat {
+		t.Error("Settings mutated common['statusLine']['format']")
+	}
+	if common["env"].(map[string]any)["FOO"] != commonEnvFoo {
+		t.Error("Settings mutated common['env']['FOO']")
+	}
+	// common's env should NOT have profile's BAZ key
+	if _, hasBaz := common["env"].(map[string]any)["BAZ"]; hasBaz {
+		t.Error("Settings leaked profile key 'BAZ' into common['env']")
 	}
 }
 

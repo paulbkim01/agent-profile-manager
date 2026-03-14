@@ -13,7 +13,9 @@ apm() {
       local rc=$?
       if [ $rc -eq 0 ]; then
         eval "$(cat "$stdout_file")"
-      else
+        rc=$?
+      fi
+      if [ $rc -ne 0 ]; then
         cat "$stderr_file" >&2
       fi
       rm -f "$stdout_file" "$stderr_file"
@@ -49,7 +51,9 @@ apm() {
       local rc=$?
       if [[ $rc -eq 0 ]]; then
         eval "$(cat "$stdout_file")"
-      else
+        rc=$?
+      fi
+      if [[ $rc -ne 0 ]]; then
         cat "$stderr_file" >&2
       fi
       rm -f "$stdout_file" "$stderr_file"

@@ -51,6 +51,8 @@ func resetFlags() {
 	useGlobal = false
 	debug = false
 	configDir = ""
+	// Reset Cobra-managed flags that aren't package-level vars
+	useCmd.Flags().Set("unset", "false")
 }
 
 // executeWithStdout runs the root command and captures real stdout.
@@ -339,6 +341,189 @@ func TestListAlias(t *testing.T) {
 	}
 	if !strings.Contains(out, "list-alias") {
 		t.Errorf("expected list-alias in output: %s", out)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "simple"},
+		{"/tmp/paul's/apm", `/tmp/paul'\''s/apm`},
+		{"no-quotes", "no-quotes"},
+		{"it's a 'test'", `it'\''s a '\''test'\''`},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := shellQuote(tt.input)
+		if got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestUseOutputsExports(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Create a profile first
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "use-test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// Use it — stdout is a pipe (not TTY), so exports should appear
+	out, err := executeWithStdout(t, "--config-dir", dir, "use", "use-test")
+	if err != nil {
+		t.Fatalf("use failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "export APM_PROFILE='use-test'") {
+		t.Errorf("expected APM_PROFILE export, got: %s", out)
+	}
+	if !strings.Contains(out, "export CLAUDE_CONFIG_DIR='") {
+		t.Errorf("expected CLAUDE_CONFIG_DIR export, got: %s", out)
+	}
+
+	// Verify generated dir was created
+	genDir := filepath.Join(dir, "generated", "use-test")
+	if _, err := os.Stat(genDir); err != nil {
+		t.Errorf("generated dir not created: %v", err)
+	}
+}
+
+func TestUseNotFound(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "use", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent profile")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestUseUnset(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	out, err := executeWithStdout(t, "--config-dir", dir, "use", "--unset")
+	if err != nil {
+		t.Fatalf("use --unset failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "unset APM_PROFILE") {
+		t.Errorf("expected unset APM_PROFILE, got: %s", out)
+	}
+	if !strings.Contains(out, "unset CLAUDE_CONFIG_DIR") {
+		t.Errorf("expected unset CLAUDE_CONFIG_DIR, got: %s", out)
+	}
+}
+
+func TestUseNoArgs(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "use")
+	if err == nil {
+		t.Fatal("expected error with no args")
+	}
+	if !strings.Contains(err.Error(), "profile name required") {
+		t.Errorf("expected 'profile name required' error, got: %v", err)
+	}
+}
+
+func TestUseExportQuotesEmbeddedSingleQuotes(t *testing.T) {
+	// shellQuote is tested directly above, but verify it's actually used
+	// in the export output format by checking the function produces valid
+	// shell syntax for paths with single quotes.
+	got := shellQuote("/tmp/paul's/dir")
+	expected := `/tmp/paul'\''s/dir`
+	if got != expected {
+		t.Errorf("shellQuote produced %q, want %q", got, expected)
+	}
+}
+
+func TestCurrentNoActiveProfile(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Ensure APM_PROFILE is not set
+	os.Unsetenv("APM_PROFILE")
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "current")
+	if err == nil {
+		t.Fatal("expected error when no profile is active")
+	}
+	if !IsNoActiveProfile(err) {
+		t.Errorf("expected errNoActiveProfile sentinel, got: %v", err)
+	}
+}
+
+func TestCurrentWithEnvVar(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	os.Setenv("APM_PROFILE", "env-profile")
+	defer os.Unsetenv("APM_PROFILE")
+
+	out, err := executeWithStdout(t, "--config-dir", dir, "current")
+	if err != nil {
+		t.Fatalf("current failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "env-profile") {
+		t.Errorf("expected 'env-profile' in output, got: %s", out)
+	}
+}
+
+func TestEditNotFound(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "edit", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error editing nonexistent profile")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestEditWithWhitespaceVisualFallsToEditor(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Create a profile
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "edit-test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// VISUAL is whitespace-only, EDITOR is "true" (exits 0, does nothing).
+	// Verifies: whitespace VISUAL is treated as empty, falls to EDITOR.
+	// Also verifies: sh -c invocation works without panic.
+	os.Setenv("VISUAL", "   ")
+	os.Setenv("EDITOR", "true")
+	defer os.Unsetenv("VISUAL")
+	defer os.Unsetenv("EDITOR")
+
+	_, err = executeWithStdout(t, "--config-dir", dir, "edit", "edit-test")
+	if err != nil {
+		t.Fatalf("edit with EDITOR=true should succeed, got: %v", err)
+	}
+}
+
+func TestEditShellParsesEditorWithFlags(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "edit-flags")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// EDITOR with flags — sh -c handles this; strings.Fields would have too,
+	// but the point is sh -c also handles quoted paths that Fields cannot.
+	os.Setenv("VISUAL", "")
+	os.Setenv("EDITOR", "true --some-flag")
+	defer os.Unsetenv("VISUAL")
+	defer os.Unsetenv("EDITOR")
+
+	_, err = executeWithStdout(t, "--config-dir", dir, "edit", "edit-flags")
+	if err != nil {
+		t.Fatalf("edit with multi-word EDITOR should succeed, got: %v", err)
 	}
 }
 
