@@ -19,7 +19,12 @@ import (
 var editCmd = &cobra.Command{
 	Use:   "edit <name>",
 	Short: "Edit a profile's settings.json in $EDITOR",
-	Args:  cobra.ExactArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("profile name required. Usage: apm edit <name>")
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {

@@ -19,7 +19,12 @@ var deleteCmd = &cobra.Command{
 	Use:     "delete <name>",
 	Aliases: []string{"rm"},
 	Short:   "Delete a profile",
-	Args:    cobra.ExactArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("profile name required. Usage: apm delete <name>")
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {
