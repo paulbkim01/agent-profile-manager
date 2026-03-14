@@ -1,0 +1,305 @@
+package profile
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/paulbkim/agent-profile-manager/internal"
+	"github.com/paulbkim/agent-profile-manager/internal/config"
+	"github.com/paulbkim/agent-profile-manager/internal/validate"
+)
+
+// Meta is the profile.yaml structure.
+type Meta struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+	CreatedAt   string `yaml:"created_at"`
+	Source      string `yaml:"source,omitempty"`
+}
+
+// Info holds profile metadata plus its filesystem path.
+type Info struct {
+	Meta Meta
+	Dir  string
+}
+
+// Create makes a new profile directory with optional source import.
+// source: "" = empty, "current" = import from ~/.claude, "<name>" = copy from profile.
+func Create(cfg *config.Config, name, source, description string) error {
+	if err := validate.ProfileName(name); err != nil {
+		return err
+	}
+
+	dir := cfg.ProfileDir(name)
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("profile '%s' already exists", name)
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating profile directory %s: %w", dir, err)
+	}
+
+	// Create subdirs
+	for _, sub := range internal.ManagedDirs {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			os.RemoveAll(dir)
+			return fmt.Errorf("creating subdirectory %s: %w", sub, err)
+		}
+	}
+
+	// Handle source
+	switch source {
+	case "", "empty":
+		// Write empty settings.json
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte("{}\n"), 0o644); err != nil {
+			os.RemoveAll(dir)
+			return fmt.Errorf("writing empty settings.json: %w", err)
+		}
+		log.Printf("profile: created empty profile '%s'", name)
+
+	case "current":
+		// Import from ~/.claude/
+		if err := importFrom(cfg.ClaudeDir, dir); err != nil {
+			os.RemoveAll(dir)
+			return fmt.Errorf("importing from current: %w", err)
+		}
+		log.Printf("profile: imported '%s' from %s", name, cfg.ClaudeDir)
+
+	default:
+		// Copy from another profile
+		srcDir := cfg.ProfileDir(source)
+		if _, err := os.Stat(srcDir); errors.Is(err, os.ErrNotExist) {
+			os.RemoveAll(dir)
+			return fmt.Errorf("source profile '%s' not found", source)
+		}
+		if err := importFrom(srcDir, dir); err != nil {
+			os.RemoveAll(dir)
+			return fmt.Errorf("copying from '%s': %w", source, err)
+		}
+		log.Printf("profile: copied '%s' from profile '%s'", name, source)
+	}
+
+	// After importing settings.json from source, validate it
+	settingsDst := filepath.Join(dir, "settings.json")
+	if err := validate.SettingsJSON(settingsDst); err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("imported settings invalid: %w", err)
+	}
+
+	// Write profile.yaml
+	meta := Meta{
+		Name:        name,
+		Description: description,
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Source:      source,
+	}
+	if err := writeMeta(dir, meta); err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("writing profile metadata: %w", err)
+	}
+	return nil
+}
+
+// Delete removes a profile. Checks if it's active first.
+func Delete(cfg *config.Config, name string, force bool) error {
+	dir := cfg.ProfileDir(name)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("profile '%s' not found", name)
+	}
+
+	// Check if active
+	if !force {
+		defaultProfile, err := cfg.DefaultProfile()
+		if err != nil {
+			return fmt.Errorf("reading default profile: %w", err)
+		}
+		if defaultProfile == name {
+			return fmt.Errorf("profile '%s' is the global default. Use --force to delete anyway", name)
+		}
+		if activeProfile := os.Getenv("APM_PROFILE"); activeProfile == name {
+			return fmt.Errorf("profile '%s' is active in this shell. Use --force to delete anyway", name)
+		}
+	}
+
+	// Clear default if this was it
+	defaultProfile, err := cfg.DefaultProfile()
+	if err != nil {
+		return fmt.Errorf("reading default profile: %w", err)
+	}
+	if defaultProfile == name {
+		if err := cfg.ClearDefaultProfile(); err != nil {
+			return fmt.Errorf("clearing default profile: %w", err)
+		}
+		log.Printf("profile: cleared global default (was '%s')", name)
+	}
+
+	// Remove generated dir
+	genDir := cfg.GeneratedProfileDir(name)
+	if err := os.RemoveAll(genDir); err != nil {
+		return fmt.Errorf("removing generated directory for '%s': %w", name, err)
+	}
+
+	// Remove profile dir
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("deleting '%s': %w", name, err)
+	}
+
+	log.Printf("profile: deleted '%s'", name)
+	return nil
+}
+
+// List returns all profiles.
+func List(cfg *config.Config) ([]Info, error) {
+	entries, err := os.ReadDir(cfg.ProfilesDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading profiles directory: %w", err)
+	}
+
+	var profiles []Info
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		meta, err := readMeta(filepath.Join(cfg.ProfilesDir, e.Name()))
+		if err != nil {
+			// Skip directories without profile.yaml
+			log.Printf("profile: skipping %s: %v", e.Name(), err)
+			continue
+		}
+		profiles = append(profiles, Info{
+			Meta: meta,
+			Dir:  filepath.Join(cfg.ProfilesDir, e.Name()),
+		})
+	}
+	return profiles, nil
+}
+
+// Get returns a single profile's info.
+func Get(cfg *config.Config, name string) (Info, error) {
+	dir := cfg.ProfileDir(name)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return Info{}, fmt.Errorf("profile '%s' not found", name)
+	}
+	meta, err := readMeta(dir)
+	if err != nil {
+		return Info{}, fmt.Errorf("reading profile '%s' metadata: %w", name, err)
+	}
+	return Info{Meta: meta, Dir: dir}, nil
+}
+
+// Exists checks if a profile exists.
+func Exists(cfg *config.Config, name string) bool {
+	_, err := os.Stat(cfg.ProfileDir(name))
+	return err == nil
+}
+
+// importFrom copies settings.json and managed dirs from src to dst.
+func importFrom(src, dst string) error {
+	// Copy settings.json
+	settingsSrc := filepath.Join(src, "settings.json")
+	settingsDst := filepath.Join(dst, "settings.json")
+	if data, err := os.ReadFile(settingsSrc); err == nil {
+		if err := os.WriteFile(settingsDst, data, 0o644); err != nil {
+			return fmt.Errorf("writing settings.json: %w", err)
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		// No settings.json in source, write empty
+		if err := os.WriteFile(settingsDst, []byte("{}\n"), 0o644); err != nil {
+			return fmt.Errorf("writing empty settings.json: %w", err)
+		}
+	} else {
+		return fmt.Errorf("reading source settings.json: %w", err)
+	}
+
+	// Copy managed dirs
+	for _, dir := range internal.ManagedDirs {
+		srcDir := filepath.Join(src, dir)
+		dstDir := filepath.Join(dst, dir)
+		if _, err := os.Stat(srcDir); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		// Walk and copy (preserving symlinks)
+		if err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return fmt.Errorf("walking %s: %w", path, err)
+			}
+			rel, err := filepath.Rel(srcDir, path)
+			if err != nil {
+				return fmt.Errorf("computing relative path for %s: %w", path, err)
+			}
+			if rel == "." {
+				return nil
+			}
+			target := filepath.Join(dstDir, rel)
+
+			if d.IsDir() {
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					return fmt.Errorf("creating directory %s: %w", target, err)
+				}
+				return nil
+			}
+
+			// Check if it's a symlink
+			info, err := os.Lstat(path)
+			if err != nil {
+				return fmt.Errorf("stat %s: %w", path, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				link, err := os.Readlink(path)
+				if err != nil {
+					return fmt.Errorf("reading symlink %s: %w", path, err)
+				}
+				if err := os.Symlink(link, target); err != nil {
+					return fmt.Errorf("creating symlink %s: %w", target, err)
+				}
+				return nil
+			}
+
+			// Regular file: copy
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			if err := os.WriteFile(target, data, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("writing %s: %w", target, err)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("copying %s directory: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func writeMeta(dir string, meta Meta) error {
+	data, err := yaml.Marshal(&meta)
+	if err != nil {
+		return fmt.Errorf("marshaling profile metadata: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "profile.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("writing profile.yaml: %w", err)
+	}
+	return nil
+}
+
+func readMeta(dir string) (Meta, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "profile.yaml"))
+	if err != nil {
+		return Meta{}, fmt.Errorf("reading profile.yaml in %s: %w", dir, err)
+	}
+	var meta Meta
+	if err := yaml.Unmarshal(data, &meta); err != nil {
+		return Meta{}, fmt.Errorf("parsing profile.yaml in %s: %w", dir, err)
+	}
+	return meta, nil
+}
