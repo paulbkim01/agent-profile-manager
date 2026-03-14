@@ -140,7 +140,7 @@ func (c *Config) EnsureDirs() error {
 	// Create common/settings.json if missing
 	commonSettings := filepath.Join(c.CommonDir, "settings.json")
 	if _, err := os.Stat(commonSettings); err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("checking %s: %w", commonSettings, err)
 		}
 		if err := os.WriteFile(commonSettings, []byte("{}\n"), 0o644); err != nil {
