@@ -3,8 +3,10 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -23,6 +25,7 @@ var describeCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		log.Printf("describe: loading profile '%s'", name)
 		info, err := profile.Get(cfg, name)
 		if err != nil {
 			return err
@@ -68,7 +71,7 @@ var describeCmd = &cobra.Command{
 			for _, e := range entries {
 				names = append(names, e.Name())
 			}
-			fmt.Printf("\n%s: %v\n", dir, names)
+			fmt.Printf("\n%s: %s\n", dir, strings.Join(names, ", "))
 		}
 
 		return nil

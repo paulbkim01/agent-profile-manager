@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,7 @@ var editCmd = &cobra.Command{
 
 		name := args[0]
 		if !profile.Exists(cfg, name) {
-			return fmt.Errorf("profile '%s' not found", name)
+			return fmt.Errorf("profile '%s' not found. Run 'apm ls' to see available profiles", name)
 		}
 
 		settingsPath := filepath.Join(cfg.ProfileDir(name), "settings.json")
@@ -39,6 +40,8 @@ var editCmd = &cobra.Command{
 		if editor == "" {
 			editor = "vi"
 		}
+
+		log.Printf("edit: opening '%s' with editor '%s'", settingsPath, editor)
 
 		// Open editor
 		editorCmd := exec.Command(editor, settingsPath)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,7 +208,7 @@ func TestDeleteProfile(t *testing.T) {
 
 	// Verify it's gone
 	profileDir := filepath.Join(dir, "profiles", "to-delete")
-	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(profileDir); !errors.Is(err, os.ErrNotExist) {
 		t.Error("profile dir should have been removed")
 	}
 }
@@ -299,7 +300,7 @@ func TestRegenerateNoArgs(t *testing.T) {
 		t.Fatal("expected error with no args and no --all")
 	}
 	if !strings.Contains(err.Error(), "profile name required") {
-		t.Errorf("expected 'profile name required' error, got: %v", err)
+		t.Errorf("expected error containing 'profile name required', got: %v", err)
 	}
 }
 

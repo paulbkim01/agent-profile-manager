@@ -37,4 +37,5 @@ func Execute() error {
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "verbose logging to stderr")
 	rootCmd.PersistentFlags().StringVar(&configDir, "config-dir", "", "override config directory (default: ~/.config/apm)")
+	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/spf13/cobra"
 
@@ -24,6 +25,7 @@ var regenerateCmd = &cobra.Command{
 		}
 
 		if regenAll {
+			log.Printf("regenerate: regenerating all profiles")
 			profiles, err := profile.List(cfg)
 			if err != nil {
 				return err
@@ -38,10 +40,11 @@ var regenerateCmd = &cobra.Command{
 		}
 
 		if len(args) == 0 {
-			return fmt.Errorf("profile name required, or use --all")
+			return fmt.Errorf("profile name required. Use 'apm regenerate <name>' or --all")
 		}
 
 		name := args[0]
+		log.Printf("regenerate: regenerating profile '%s'", name)
 		if err := generate.Profile(cfg, name); err != nil {
 			return err
 		}

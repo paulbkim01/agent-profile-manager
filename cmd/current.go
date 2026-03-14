@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ var currentCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check env var first (per-shell override)
 		if name := os.Getenv("APM_PROFILE"); name != "" {
+			log.Printf("current: from env APM_PROFILE=%s", name)
 			fmt.Println(name)
 			return nil
 		}

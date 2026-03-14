@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -25,6 +26,8 @@ var lsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+
+		log.Printf("ls: found %d profiles", len(profiles))
 
 		if len(profiles) == 0 {
 			fmt.Println("No profiles. Create one with: apm create <name>")

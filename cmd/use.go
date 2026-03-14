@@ -40,6 +40,7 @@ var useCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		log.Printf("use: switching to profile '%s' (global=%v)", name, useGlobal)
 
 		// Check profile exists
 		if !profile.Exists(cfg, name) {

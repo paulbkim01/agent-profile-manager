@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/spf13/cobra"
 
@@ -28,6 +29,7 @@ var createCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		log.Printf("create: creating profile '%s' (from=%q, desc=%q)", name, createFrom, createDesc)
 		if err := profile.Create(cfg, name, createFrom, createDesc); err != nil {
 			return err
 		}

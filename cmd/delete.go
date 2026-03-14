@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ var deleteCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		log.Printf("delete: deleting profile '%s' (force=%v)", name, deleteForce)
 		if err := profile.Delete(cfg, name, deleteForce); err != nil {
 			return err
 		}
