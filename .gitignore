@@ -1,0 +1,9 @@
+# Build output
+bin/
+dist/
+apm
+agent-profile-manager
+.DS_Store
+.idea/
+.claude/
+AGENTS.md
