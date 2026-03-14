@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +17,13 @@ import (
 type errNoActiveProfile struct{}
 
 func (errNoActiveProfile) Error() string { return "no active profile" }
+
+// IsNoActiveProfile reports whether err is the sentinel for "no active profile".
+// Used by main.go to exit silently with code 1.
+func IsNoActiveProfile(err error) bool {
+	var target errNoActiveProfile
+	return errors.As(err, &target)
+}
 
 var currentCmd = &cobra.Command{
 	Use:   "current",

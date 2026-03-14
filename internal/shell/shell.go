@@ -7,14 +7,17 @@ const bashInit = `
 apm() {
   case "$1" in
     use)
-      local output
-      output=$(command apm "$@" 2>/dev/null)
+      local stdout_file stderr_file
+      stdout_file=$(mktemp) stderr_file=$(mktemp)
+      command apm "$@" >"$stdout_file" 2>"$stderr_file"
       local rc=$?
       if [ $rc -eq 0 ]; then
-        eval "$output"
+        eval "$(cat "$stdout_file")"
       else
-        command apm "$@"
+        cat "$stderr_file" >&2
       fi
+      rm -f "$stdout_file" "$stderr_file"
+      return $rc
       ;;
     *)
       command apm "$@"
@@ -40,14 +43,17 @@ const zshInit = `
 apm() {
   case "$1" in
     use)
-      local output
-      output=$(command apm "$@" 2>/dev/null)
+      local stdout_file stderr_file
+      stdout_file=$(mktemp) stderr_file=$(mktemp)
+      command apm "$@" >"$stdout_file" 2>"$stderr_file"
       local rc=$?
       if [[ $rc -eq 0 ]]; then
-        eval "$output"
+        eval "$(cat "$stdout_file")"
       else
-        command apm "$@"
+        cat "$stderr_file" >&2
       fi
+      rm -f "$stdout_file" "$stderr_file"
+      return $rc
       ;;
     *)
       command apm "$@"

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -35,16 +36,22 @@ var ReservedNames = map[string]bool{
 // This must NOT read CLAUDE_CONFIG_DIR, because that env var points
 // to a generated profile dir once a profile is active.
 // Use config.yaml claude_dir for non-standard installs.
-func DefaultClaudeDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude")
+func DefaultClaudeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude"), nil
 }
 
 // DefaultAPMDir returns ~/.config/apm (or $XDG_CONFIG_HOME/apm).
-func DefaultAPMDir() string {
+func DefaultAPMDir() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "apm")
+		return filepath.Join(xdg, "apm"), nil
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "apm")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "apm"), nil
 }

@@ -52,12 +52,21 @@ func (c *Config) readConfigFile() (*ConfigFile, error) {
 func Load(apmDirOverride string) (*Config, error) {
 	apmDir := apmDirOverride
 	if apmDir == "" {
-		apmDir = internal.DefaultAPMDir()
+		var err error
+		apmDir, err = internal.DefaultAPMDir()
+		if err != nil {
+			return nil, fmt.Errorf("determining config directory: %w", err)
+		}
+	}
+
+	claudeDir, err := internal.DefaultClaudeDir()
+	if err != nil {
+		return nil, fmt.Errorf("determining claude directory: %w", err)
 	}
 
 	c := &Config{
 		APMDir:       apmDir,
-		ClaudeDir:    internal.DefaultClaudeDir(),
+		ClaudeDir:    claudeDir,
 		CommonDir:    filepath.Join(apmDir, "common"),
 		ProfilesDir:  filepath.Join(apmDir, "profiles"),
 		GeneratedDir: filepath.Join(apmDir, "generated"),
