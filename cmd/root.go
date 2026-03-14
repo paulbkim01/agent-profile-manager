@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Package-level flag vars — if you add a new one, also add it to resetFlags() in cmd_test.go.
 var (
 	debug     bool
 	configDir string

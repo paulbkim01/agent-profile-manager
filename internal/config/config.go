@@ -119,6 +119,7 @@ func (c *Config) SetDefaultProfile(name string) error {
 		return fmt.Errorf("writing temp config file: %w", err)
 	}
 	if err := os.Rename(tmp, c.ConfigPath); err != nil {
+		os.Remove(tmp) // clean up orphaned temp file
 		return fmt.Errorf("renaming temp config to %s: %w", c.ConfigPath, err)
 	}
 	return nil

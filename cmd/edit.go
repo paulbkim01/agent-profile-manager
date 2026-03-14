@@ -27,6 +27,9 @@ var editCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		if err := validate.ProfileName(name); err != nil {
+			return fmt.Errorf("invalid profile name: %w", err)
+		}
 		if !profile.Exists(cfg, name) {
 			return fmt.Errorf("profile '%s' not found. Run 'apm ls' to see available profiles", name)
 		}

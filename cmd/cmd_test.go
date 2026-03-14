@@ -391,6 +391,18 @@ func TestUseOutputsExports(t *testing.T) {
 	}
 }
 
+func TestUseInvalidName(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "use", "../../etc")
+	if err == nil {
+		t.Fatal("expected error for invalid profile name")
+	}
+	if !strings.Contains(err.Error(), "invalid profile name") {
+		t.Errorf("expected 'invalid profile name' error, got: %v", err)
+	}
+}
+
 func TestUseNotFound(t *testing.T) {
 	dir := setupTestEnv(t)
 
@@ -445,7 +457,7 @@ func TestCurrentNoActiveProfile(t *testing.T) {
 	dir := setupTestEnv(t)
 
 	// Ensure APM_PROFILE is not set
-	os.Unsetenv("APM_PROFILE")
+	t.Setenv("APM_PROFILE", "")
 
 	_, err := executeWithStdout(t, "--config-dir", dir, "current")
 	if err == nil {
@@ -459,8 +471,7 @@ func TestCurrentNoActiveProfile(t *testing.T) {
 func TestCurrentWithEnvVar(t *testing.T) {
 	dir := setupTestEnv(t)
 
-	os.Setenv("APM_PROFILE", "env-profile")
-	defer os.Unsetenv("APM_PROFILE")
+	t.Setenv("APM_PROFILE", "env-profile")
 
 	out, err := executeWithStdout(t, "--config-dir", dir, "current")
 	if err != nil {
@@ -495,10 +506,8 @@ func TestEditWithWhitespaceVisualFallsToEditor(t *testing.T) {
 	// VISUAL is whitespace-only, EDITOR is "true" (exits 0, does nothing).
 	// Verifies: whitespace VISUAL is treated as empty, falls to EDITOR.
 	// Also verifies: sh -c invocation works without panic.
-	os.Setenv("VISUAL", "   ")
-	os.Setenv("EDITOR", "true")
-	defer os.Unsetenv("VISUAL")
-	defer os.Unsetenv("EDITOR")
+	t.Setenv("VISUAL", "   ")
+	t.Setenv("EDITOR", "true")
 
 	_, err = executeWithStdout(t, "--config-dir", dir, "edit", "edit-test")
 	if err != nil {
@@ -516,10 +525,8 @@ func TestEditShellParsesEditorWithFlags(t *testing.T) {
 
 	// EDITOR with flags — sh -c handles this; strings.Fields would have too,
 	// but the point is sh -c also handles quoted paths that Fields cannot.
-	os.Setenv("VISUAL", "")
-	os.Setenv("EDITOR", "true --some-flag")
-	defer os.Unsetenv("VISUAL")
-	defer os.Unsetenv("EDITOR")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", "true --some-flag")
 
 	_, err = executeWithStdout(t, "--config-dir", dir, "edit", "edit-flags")
 	if err != nil {

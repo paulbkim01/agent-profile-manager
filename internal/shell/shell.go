@@ -30,10 +30,13 @@ apm() {
 # Auto-activate global default on shell startup
 _apm_auto_activate() {
   if [ -z "$APM_PROFILE" ]; then
-    local default_profile
+    local default_profile output
     default_profile=$(command apm current 2>/dev/null)
     if [ -n "$default_profile" ]; then
-      eval "$(command apm use "$default_profile" 2>/dev/null)"
+      output=$(command apm use "$default_profile" 2>/dev/null)
+      if [ $? -eq 0 ]; then
+        eval "$output"
+      fi
     fi
   fi
 }
@@ -68,10 +71,13 @@ apm() {
 # Auto-activate global default on shell startup
 _apm_auto_activate() {
   if [[ -z "$APM_PROFILE" ]]; then
-    local default_profile
+    local default_profile output
     default_profile=$(command apm current 2>/dev/null)
     if [[ -n "$default_profile" ]]; then
-      eval "$(command apm use "$default_profile" 2>/dev/null)"
+      output=$(command apm use "$default_profile" 2>/dev/null)
+      if [[ $? -eq 0 ]]; then
+        eval "$output"
+      fi
     fi
   fi
 }

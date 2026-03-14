@@ -12,6 +12,7 @@ import (
 
 	"github.com/paulbkim/agent-profile-manager/internal/config"
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
+	"github.com/paulbkim/agent-profile-manager/internal/validate"
 )
 
 var describeCmd = &cobra.Command{
@@ -25,6 +26,9 @@ var describeCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		if err := validate.ProfileName(name); err != nil {
+			return fmt.Errorf("invalid profile name: %w", err)
+		}
 		log.Printf("describe: loading profile '%s'", name)
 		info, err := profile.Get(cfg, name)
 		if err != nil {

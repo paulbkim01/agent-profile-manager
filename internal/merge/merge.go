@@ -215,6 +215,7 @@ func WriteJSON(path string, data map[string]any) error {
 		return fmt.Errorf("writing temp file %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp) // clean up orphaned temp file
 		return fmt.Errorf("renaming %s to %s: %w", tmp, path, err)
 	}
 	return nil

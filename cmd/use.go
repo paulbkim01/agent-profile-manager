@@ -11,6 +11,7 @@ import (
 	"github.com/paulbkim/agent-profile-manager/internal/config"
 	"github.com/paulbkim/agent-profile-manager/internal/generate"
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
+	"github.com/paulbkim/agent-profile-manager/internal/validate"
 )
 
 // shellQuote escapes a string for safe use inside POSIX single quotes.
@@ -19,6 +20,7 @@ func shellQuote(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)
 }
 
+// Flag var — also listed in resetFlags() in cmd_test.go.
 var useGlobal bool
 
 var useCmd = &cobra.Command{
@@ -47,6 +49,9 @@ var useCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		if err := validate.ProfileName(name); err != nil {
+			return fmt.Errorf("invalid profile name: %w", err)
+		}
 		log.Printf("use: switching to profile '%s' (global=%v)", name, useGlobal)
 
 		// Check profile exists

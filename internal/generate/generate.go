@@ -15,6 +15,16 @@ import (
 	"github.com/paulbkim/agent-profile-manager/internal/validate"
 )
 
+// skipExtensions are backup/temp file extensions that should not be symlinked
+// into generated directories.
+var skipExtensions = map[string]bool{
+	".work":   true,
+	".backup": true,
+	".bak":    true,
+	".orig":   true,
+	".tmp":    true,
+}
+
 // Profile builds the generated directory for a profile.
 // Cleans and rebuilds from scratch each time.
 func Profile(cfg *config.Config, name string) error {
@@ -177,8 +187,8 @@ func symlinkShared(cfg *config.Config, genDir string) error {
 			continue
 		}
 
-		// Skip backup files like settings.json.work
-		if filepath.Ext(name) == ".work" || filepath.Ext(name) == ".backup" {
+		// Skip backup/temp files
+		if skipExtensions[filepath.Ext(name)] {
 			continue
 		}
 

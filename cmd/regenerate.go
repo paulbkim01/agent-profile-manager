@@ -11,6 +11,7 @@ import (
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
 )
 
+// Flag var — also listed in resetFlags() in cmd_test.go.
 var regenAll bool
 
 var regenerateCmd = &cobra.Command{

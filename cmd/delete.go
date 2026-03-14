@@ -9,8 +9,10 @@ import (
 
 	"github.com/paulbkim/agent-profile-manager/internal/config"
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
+	"github.com/paulbkim/agent-profile-manager/internal/validate"
 )
 
+// Flag var — also listed in resetFlags() in cmd_test.go.
 var deleteForce bool
 
 var deleteCmd = &cobra.Command{
@@ -25,6 +27,9 @@ var deleteCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		if err := validate.ProfileName(name); err != nil {
+			return fmt.Errorf("invalid profile name: %w", err)
+		}
 		log.Printf("delete: deleting profile '%s' (force=%v)", name, deleteForce)
 
 		// Check if this profile was the global default before deletion

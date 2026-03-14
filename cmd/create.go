@@ -11,6 +11,7 @@ import (
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
 )
 
+// Flag vars — also listed in resetFlags() in cmd_test.go.
 var (
 	createFrom string
 	createDesc string
