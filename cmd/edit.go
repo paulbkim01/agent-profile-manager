@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -22,7 +23,7 @@ var editCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading config: %w", err)
 		}
 
 		name := args[0]
@@ -43,8 +44,10 @@ var editCmd = &cobra.Command{
 
 		log.Printf("edit: opening '%s' with editor '%s'", settingsPath, editor)
 
-		// Open editor
-		editorCmd := exec.Command(editor, settingsPath)
+		// Open editor — split editor string so multi-word values like
+		// "code --wait" work correctly.
+		parts := strings.Fields(editor)
+		editorCmd := exec.Command(parts[0], append(parts[1:], settingsPath)...)
 		editorCmd.Stdin = os.Stdin
 		editorCmd.Stdout = os.Stdout
 		editorCmd.Stderr = os.Stderr

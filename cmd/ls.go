@@ -19,12 +19,12 @@ var lsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading config: %w", err)
 		}
 
 		profiles, err := profile.List(cfg)
 		if err != nil {
-			return err
+			return fmt.Errorf("listing profiles: %w", err)
 		}
 
 		log.Printf("ls: found %d profiles", len(profiles))

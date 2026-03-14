@@ -22,7 +22,7 @@ var createCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading config: %w", err)
 		}
 		if err := cfg.EnsureDirs(); err != nil {
 			return fmt.Errorf("ensuring directories: %w", err)
@@ -31,7 +31,7 @@ var createCmd = &cobra.Command{
 		name := args[0]
 		log.Printf("create: creating profile '%s' (from=%q, desc=%q)", name, createFrom, createDesc)
 		if err := profile.Create(cfg, name, createFrom, createDesc); err != nil {
-			return err
+			return fmt.Errorf("creating profile: %w", err)
 		}
 
 		fmt.Printf("Created profile '%s'\n", name)

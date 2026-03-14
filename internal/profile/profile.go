@@ -40,6 +40,8 @@ func Create(cfg *config.Config, name, source, description string) error {
 	dir := cfg.ProfileDir(name)
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("profile '%s' already exists", name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking profile directory %s: %w", dir, err)
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -75,9 +77,12 @@ func Create(cfg *config.Config, name, source, description string) error {
 	default:
 		// Copy from another profile
 		srcDir := cfg.ProfileDir(source)
-		if _, err := os.Stat(srcDir); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(srcDir); err != nil {
 			os.RemoveAll(dir)
-			return fmt.Errorf("source profile '%s' not found", source)
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("source profile '%s' not found", source)
+			}
+			return fmt.Errorf("checking source profile directory %s: %w", srcDir, err)
 		}
 		if err := importFrom(srcDir, dir); err != nil {
 			os.RemoveAll(dir)
@@ -110,8 +115,11 @@ func Create(cfg *config.Config, name, source, description string) error {
 // Delete removes a profile. Checks if it's active first.
 func Delete(cfg *config.Config, name string, force bool) error {
 	dir := cfg.ProfileDir(name)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("profile '%s' not found", name)
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("profile '%s' not found", name)
+		}
+		return fmt.Errorf("checking profile directory %s: %w", dir, err)
 	}
 
 	// Check if active
@@ -187,8 +195,11 @@ func List(cfg *config.Config) ([]Info, error) {
 // Get returns a single profile's info.
 func Get(cfg *config.Config, name string) (Info, error) {
 	dir := cfg.ProfileDir(name)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		return Info{}, fmt.Errorf("profile '%s' not found", name)
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Info{}, fmt.Errorf("profile '%s' not found", name)
+		}
+		return Info{}, fmt.Errorf("checking profile directory %s: %w", dir, err)
 	}
 	meta, err := readMeta(dir)
 	if err != nil {
@@ -198,8 +209,13 @@ func Get(cfg *config.Config, name string) (Info, error) {
 }
 
 // Exists checks if a profile exists.
+// Returns false for both missing profiles and unexpected stat errors.
+// Callers that need to distinguish should use Get() instead.
 func Exists(cfg *config.Config, name string) bool {
 	_, err := os.Stat(cfg.ProfileDir(name))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("profile: unexpected error checking %s: %v", name, err)
+	}
 	return err == nil
 }
 

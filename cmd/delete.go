@@ -21,13 +21,13 @@ var deleteCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading config: %w", err)
 		}
 
 		name := args[0]
 		log.Printf("delete: deleting profile '%s' (force=%v)", name, deleteForce)
 		if err := profile.Delete(cfg, name, deleteForce); err != nil {
-			return err
+			return fmt.Errorf("deleting profile: %w", err)
 		}
 
 		fmt.Printf("Deleted profile '%s'\n", name)

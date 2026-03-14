@@ -117,12 +117,13 @@ func mergeDir(cfg *config.Config, profileDir, genDir, dirName string) error {
 			}
 
 			if err := os.Symlink(realSrc, dst); err != nil {
-				log.Printf("generate: warn: symlink %s -> %s: %v", dst, realSrc, err)
-			} else {
-				log.Printf("generate: link %s/%s -> profile", dirName, e.Name())
+				return fmt.Errorf("symlink %s -> %s: %w", dst, realSrc, err)
 			}
+			log.Printf("generate: link %s/%s -> profile", dirName, e.Name())
 			linked[e.Name()] = true
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading profile dir %s: %w", profileSrc, err)
 	}
 
 	// Common entries (skip if profile already has same name)
@@ -141,11 +142,12 @@ func mergeDir(cfg *config.Config, profileDir, genDir, dirName string) error {
 			}
 
 			if err := os.Symlink(realSrc, dst); err != nil {
-				log.Printf("generate: warn: symlink %s -> %s: %v", dst, realSrc, err)
-			} else {
-				log.Printf("generate: link %s/%s -> common", dirName, e.Name())
+				return fmt.Errorf("symlink %s -> %s: %w", dst, realSrc, err)
 			}
+			log.Printf("generate: link %s/%s -> common", dirName, e.Name())
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading common dir %s: %w", commonSrc, err)
 	}
 
 	return nil
@@ -190,10 +192,9 @@ func symlinkShared(cfg *config.Config, genDir string) error {
 		}
 
 		if err := os.Symlink(src, dst); err != nil {
-			log.Printf("generate: warn: symlink %s: %v", name, err)
-		} else {
-			log.Printf("generate: link %s -> shared", name)
+			return fmt.Errorf("symlink %s -> %s: %w", dst, src, err)
 		}
+		log.Printf("generate: link %s -> shared", name)
 	}
 
 	return nil

@@ -22,7 +22,7 @@ var useCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(configDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading config: %w", err)
 		}
 
 		// Handle --unset
@@ -82,8 +82,8 @@ var useCmd = &cobra.Command{
 		}
 
 		// Always output the export statements (for eval to pick up)
-		fmt.Printf("export APM_PROFILE=%s\n", name)
-		fmt.Printf("export CLAUDE_CONFIG_DIR=%s\n", genDir)
+		fmt.Printf("export APM_PROFILE='%s'\n", name)
+		fmt.Printf("export CLAUDE_CONFIG_DIR='%s'\n", genDir)
 
 		return nil
 	},

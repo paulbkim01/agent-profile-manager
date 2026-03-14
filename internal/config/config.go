@@ -112,7 +112,16 @@ func (c *Config) SetDefaultProfile(name string) error {
 	if err := os.MkdirAll(filepath.Dir(c.ConfigPath), 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
-	return os.WriteFile(c.ConfigPath, out, 0o644)
+
+	// Atomic write: temp file + rename
+	tmp := c.ConfigPath + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return fmt.Errorf("writing temp config file: %w", err)
+	}
+	if err := os.Rename(tmp, c.ConfigPath); err != nil {
+		return fmt.Errorf("renaming temp config to %s: %w", c.ConfigPath, err)
+	}
+	return nil
 }
 
 // ClearDefaultProfile removes default_profile from config.yaml.
