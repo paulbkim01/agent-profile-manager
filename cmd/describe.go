@@ -45,7 +45,9 @@ var describeCmd = &cobra.Command{
 		settingsPath := filepath.Join(info.Dir, "settings.json")
 		if data, err := os.ReadFile(settingsPath); err == nil {
 			var settings map[string]any
-			if json.Unmarshal(data, &settings) == nil && len(settings) > 0 {
+			if err := json.Unmarshal(data, &settings); err != nil {
+				log.Printf("describe: failed to parse %s: %v", settingsPath, err)
+			} else if len(settings) > 0 {
 				fmt.Printf("\nSettings overrides:\n")
 				for key, val := range settings {
 					switch v := val.(type) {
@@ -58,13 +60,19 @@ var describeCmd = &cobra.Command{
 					}
 				}
 			}
+		} else {
+			log.Printf("describe: failed to read %s: %v", settingsPath, err)
 		}
 
 		// Show managed dirs content
 		for _, dir := range []string{"skills", "commands", "agents"} {
 			dirPath := filepath.Join(info.Dir, dir)
 			entries, err := os.ReadDir(dirPath)
-			if err != nil || len(entries) == 0 {
+			if err != nil {
+				log.Printf("describe: failed to read dir %s: %v", dirPath, err)
+				continue
+			}
+			if len(entries) == 0 {
 				continue
 			}
 			names := make([]string, 0, len(entries))

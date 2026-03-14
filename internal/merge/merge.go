@@ -65,9 +65,15 @@ func deepMerge(dst, src map[string]any, prefix string) {
 			srcMap, srcOk := srcVal.(map[string]any)
 			dstMap, dstOk := dstVal.(map[string]any)
 			if srcOk && dstOk {
-				for k, v := range srcMap {
-					dstMap[k] = v
+				// Clone dstMap to avoid mutating the caller's input map
+				merged := make(map[string]any, len(dstMap)+len(srcMap))
+				for k, v := range dstMap {
+					merged[k] = v
 				}
+				for k, v := range srcMap {
+					merged[k] = v
+				}
+				dst[key] = merged
 				log.Printf("merge: object-merge %s", path)
 				continue
 			} else if srcOk && !exists {

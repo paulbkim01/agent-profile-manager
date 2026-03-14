@@ -105,51 +105,50 @@ func mergeDir(cfg *config.Config, profileDir, genDir, dirName string) error {
 	linked := make(map[string]bool)
 
 	// Profile entries first (they win on conflict)
-	if entries, err := os.ReadDir(profileSrc); err == nil {
-		for _, e := range entries {
-			src := filepath.Join(profileSrc, e.Name())
-			dst := filepath.Join(targetDir, e.Name())
-
-			// Resolve the actual target if src is itself a symlink
-			realSrc, err := filepath.EvalSymlinks(src)
-			if err != nil {
-				realSrc = src
-			}
-
-			if err := os.Symlink(realSrc, dst); err != nil {
-				return fmt.Errorf("symlink %s -> %s: %w", dst, realSrc, err)
-			}
-			log.Printf("generate: link %s/%s -> profile", dirName, e.Name())
-			linked[e.Name()] = true
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("reading profile dir %s: %w", profileSrc, err)
+	if err := symlinkEntries(profileSrc, targetDir, dirName, "profile", linked); err != nil {
+		return err
 	}
 
 	// Common entries (skip if profile already has same name)
-	if entries, err := os.ReadDir(commonSrc); err == nil {
-		for _, e := range entries {
-			if linked[e.Name()] {
-				log.Printf("generate: skip %s/%s (overridden by profile)", dirName, e.Name())
-				continue
-			}
-			src := filepath.Join(commonSrc, e.Name())
-			dst := filepath.Join(targetDir, e.Name())
-
-			realSrc, err := filepath.EvalSymlinks(src)
-			if err != nil {
-				realSrc = src
-			}
-
-			if err := os.Symlink(realSrc, dst); err != nil {
-				return fmt.Errorf("symlink %s -> %s: %w", dst, realSrc, err)
-			}
-			log.Printf("generate: link %s/%s -> common", dirName, e.Name())
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("reading common dir %s: %w", commonSrc, err)
+	if err := symlinkEntries(commonSrc, targetDir, dirName, "common", linked); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// symlinkEntries reads entries from srcDir and creates symlinks in targetDir.
+// Already-linked names in the linked map are skipped (profile wins over common).
+// New entries are recorded in linked. label is used for log messages.
+func symlinkEntries(srcDir, targetDir, dirName, label string, linked map[string]bool) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s dir %s: %w", label, srcDir, err)
+	}
+	for _, e := range entries {
+		if linked[e.Name()] {
+			log.Printf("generate: skip %s/%s (overridden by profile)", dirName, e.Name())
+			continue
+		}
+
+		src := filepath.Join(srcDir, e.Name())
+		dst := filepath.Join(targetDir, e.Name())
+
+		// Resolve the actual target if src is itself a symlink
+		realSrc, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			realSrc = src
+		}
+
+		if err := os.Symlink(realSrc, dst); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", dst, realSrc, err)
+		}
+		log.Printf("generate: link %s/%s -> %s", dirName, e.Name(), label)
+		linked[e.Name()] = true
+	}
 	return nil
 }
 

@@ -81,9 +81,13 @@ var useCmd = &cobra.Command{
 			}
 		}
 
-		// Always output the export statements (for eval to pick up)
-		fmt.Printf("export APM_PROFILE='%s'\n", name)
-		fmt.Printf("export CLAUDE_CONFIG_DIR='%s'\n", genDir)
+		// Output export statements for eval to pick up.
+		// When --global is set on a TTY, the user just wants to set the default,
+		// so suppress the export noise.
+		if !(isTTY && useGlobal) {
+			fmt.Printf("export APM_PROFILE='%s'\n", name)
+			fmt.Printf("export CLAUDE_CONFIG_DIR='%s'\n", genDir)
+		}
 
 		return nil
 	},

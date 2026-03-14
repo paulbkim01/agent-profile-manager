@@ -30,6 +30,10 @@ var regenerateCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
+			if len(profiles) == 0 {
+				fmt.Println("No profiles to regenerate.")
+				return nil
+			}
 			for _, p := range profiles {
 				if err := generate.Profile(cfg, p.Meta.Name); err != nil {
 					return fmt.Errorf("regenerating '%s': %w", p.Meta.Name, err)
@@ -45,6 +49,11 @@ var regenerateCmd = &cobra.Command{
 
 		name := args[0]
 		log.Printf("regenerate: regenerating profile '%s'", name)
+
+		if !profile.Exists(cfg, name) {
+			return fmt.Errorf("profile '%s' not found. Run 'apm ls' to see available profiles", name)
+		}
+
 		if err := generate.Profile(cfg, name); err != nil {
 			return err
 		}

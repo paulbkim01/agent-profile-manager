@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -36,9 +37,9 @@ var createCmd = &cobra.Command{
 
 		fmt.Printf("Created profile '%s'\n", name)
 		if createFrom == "" {
-			fmt.Printf("Edit it with: apm edit %s\n", name)
+			fmt.Fprintf(os.Stderr, "Edit it with: apm edit %s\n", name)
 		}
-		fmt.Printf("Activate with: eval \"$(apm use %s)\"\n", name)
+		fmt.Fprintf(os.Stderr, "Activate with: eval \"$(apm use %s)\"\n", name)
 		return nil
 	},
 }

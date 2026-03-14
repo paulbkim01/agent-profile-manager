@@ -40,18 +40,6 @@ func setupTestEnv(t *testing.T) string {
 	return dir
 }
 
-// executeCmd runs the root command with the given args and captures stdout.
-// Returns stdout output and error.
-func executeCmd(args ...string) (string, error) {
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetErr(buf)
-	rootCmd.SetArgs(args)
-
-	err := rootCmd.Execute()
-	return buf.String(), err
-}
-
 // resetFlags resets all package-level flag variables to their defaults.
 // Cobra doesn't reset flag values between test runs, so tests that
 // set --all, --from, --force etc. can leak into subsequent tests.
@@ -60,6 +48,9 @@ func resetFlags() {
 	createDesc = ""
 	deleteForce = false
 	regenAll = false
+	useGlobal = false
+	debug = false
+	configDir = ""
 }
 
 // executeWithStdout runs the root command and captures real stdout.
@@ -101,9 +92,8 @@ func TestCreateAndList(t *testing.T) {
 	if !strings.Contains(out, "Created profile 'test-profile'") {
 		t.Errorf("unexpected create output: %s", out)
 	}
-	if !strings.Contains(out, "Edit it with: apm edit test-profile") {
-		t.Errorf("expected edit hint in output: %s", out)
-	}
+	// Edit hint now goes to stderr, so it won't appear in captured stdout.
+	// Just verify the main "Created" message is on stdout.
 
 	// Verify profile dir exists
 	profileDir := filepath.Join(dir, "profiles", "test-profile")
