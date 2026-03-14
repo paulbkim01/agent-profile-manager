@@ -20,6 +20,16 @@ func shellQuote(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)
 }
 
+// isStdoutTTY reports whether stdout is a terminal.
+// Returns false if stdout is a pipe, file, or if the stat fails.
+func isStdoutTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
 // Flag var — also listed in resetFlags() in cmd_test.go.
 var useGlobal bool
 
@@ -34,6 +44,9 @@ var useCmd = &cobra.Command{
 			return fmt.Errorf("loading config: %w", err)
 		}
 
+		// Detect if stdout is a terminal (not inside eval/pipe)
+		isTTY := isStdoutTTY()
+
 		// Handle --unset
 		if len(args) == 0 {
 			unset, err := cmd.Flags().GetBool("unset")
@@ -41,8 +54,15 @@ var useCmd = &cobra.Command{
 				return fmt.Errorf("reading --unset flag: %w", err)
 			}
 			if unset {
-				fmt.Println("unset APM_PROFILE")
-				fmt.Println("unset CLAUDE_CONFIG_DIR")
+				if isTTY {
+					// Direct TTY: show guidance, no shell code on stdout
+					fmt.Fprintf(os.Stderr, "To deactivate in this shell, run:\n")
+					fmt.Fprintf(os.Stderr, "  eval \"$(apm use --unset)\"\n")
+				} else {
+					// Inside eval/pipe: emit shell code
+					fmt.Println("unset APM_PROFILE")
+					fmt.Println("unset CLAUDE_CONFIG_DIR")
+				}
 				return nil
 			}
 			return fmt.Errorf("profile name required. Use 'apm use <profile>' or 'apm use --unset'")
@@ -74,29 +94,19 @@ var useCmd = &cobra.Command{
 			log.Printf("use: set global default to '%s'", name)
 		}
 
-		// Detect if running inside eval or not
-		fi, err := os.Stdout.Stat()
-		if err != nil {
-			return fmt.Errorf("checking stdout: %w", err)
-		}
-		isTTY := fi.Mode()&os.ModeCharDevice != 0
-
 		if isTTY {
-			// Not inside eval -- print instructions to stderr
-			fmt.Fprintf(os.Stderr, "To activate in this shell, run:\n")
-			fmt.Fprintf(os.Stderr, "  eval \"$(apm use %s)\"\n\n", name)
-			fmt.Fprintf(os.Stderr, "Or add shell integration to your rc file:\n")
-			fmt.Fprintf(os.Stderr, "  eval \"$(apm init bash)\"  # or zsh\n")
-
+			// Direct TTY invocation: no shell code on stdout, only guidance on stderr
 			if useGlobal {
-				fmt.Fprintf(os.Stderr, "\nGlobal default set to '%s'.\n", name)
+				fmt.Fprintf(os.Stderr, "Global default set to '%s'.\n", name)
+				fmt.Fprintf(os.Stderr, "New shells will auto-activate this profile.\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "To activate in this shell, run:\n")
+				fmt.Fprintf(os.Stderr, "  eval \"$(apm use %s)\"\n\n", name)
+				fmt.Fprintf(os.Stderr, "Or add shell integration to your rc file:\n")
+				fmt.Fprintf(os.Stderr, "  eval \"$(apm init bash)\"  # or zsh\n")
 			}
-		}
-
-		// Output export statements for eval to pick up.
-		// When --global is set on a TTY, the user just wants to set the default,
-		// so suppress the export noise.
-		if !(isTTY && useGlobal) {
+		} else {
+			// Inside eval/pipe: emit shell-safe exports
 			fmt.Printf("export APM_PROFILE='%s'\n", shellQuote(name))
 			fmt.Printf("export CLAUDE_CONFIG_DIR='%s'\n", shellQuote(genDir))
 		}
