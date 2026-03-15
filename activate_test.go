@@ -251,6 +251,43 @@ func TestDeactivateNoState(t *testing.T) {
 	}
 }
 
+func TestDeactivateWithExistingRealDir(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+	claudePath := filepath.Join(fakeHome, ".claude")
+
+	// Activate (backs up ~/.claude, creates symlink)
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Simulate inconsistent state: replace symlink with a real directory
+	// (e.g. user manually restored, or another tool recreated ~/.claude)
+	if err := os.Remove(claudePath); err != nil {
+		t.Fatalf("removing symlink: %v", err)
+	}
+	if err := os.MkdirAll(claudePath, 0o755); err != nil {
+		t.Fatalf("creating real dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(claudePath, "user-file.txt"), []byte("manual"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deactivate should succeed — ~/.claude is already a real dir,
+	// so backup restore is skipped gracefully
+	if err := deactivateProfile(cfg); err != nil {
+		t.Fatalf("deactivateProfile should succeed, got: %v", err)
+	}
+
+	// The user's real directory should be preserved (not overwritten by backup)
+	data, err := os.ReadFile(filepath.Join(claudePath, "user-file.txt"))
+	if err != nil {
+		t.Fatalf("user file should be preserved: %v", err)
+	}
+	if string(data) != "manual" {
+		t.Errorf("user file content changed: got %q", string(data))
+	}
+}
+
 func TestCaptureRestoreExternalState(t *testing.T) {
 	dir := t.TempDir()
 	fakeHome := t.TempDir()
@@ -309,14 +346,18 @@ func TestRestoreNoSavedState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Restore from non-existent dir — should remove ~/.claude.json for fresh setup
+	// Restore from non-existent dir — should write empty ~/.claude.json for fresh setup
 	if err := restoreExternalState(filepath.Join(fakeHome, "nonexistent")); err != nil {
 		t.Fatalf("restoreExternalState: %v", err)
 	}
 
-	// ~/.claude.json should be removed so Claude prompts for first-time setup
-	if _, err := os.Stat(claudeJSON); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("~/.claude.json should be removed for fresh setup, but still exists")
+	// ~/.claude.json should be an empty JSON object for fresh setup
+	data, readErr := os.ReadFile(claudeJSON)
+	if readErr != nil {
+		t.Fatalf("~/.claude.json should exist: %v", readErr)
+	}
+	if string(data) != "{}" {
+		t.Errorf("~/.claude.json should be empty JSON, got %q", string(data))
 	}
 }
 
@@ -401,10 +442,14 @@ func TestSwitchPreservesOldProfileState(t *testing.T) {
 		t.Errorf("profile A external state = %q, want updated content", string(data))
 	}
 
-	// Profile B has no saved external state — ~/.claude.json should be removed
+	// Profile B has no saved external state — ~/.claude.json should be empty JSON
 	claudeJSON = filepath.Join(fakeHome, ".claude.json")
-	if _, err := os.Stat(claudeJSON); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("~/.claude.json should be removed when switching to new profile, but still exists")
+	freshData, freshErr := os.ReadFile(claudeJSON)
+	if freshErr != nil {
+		t.Fatalf("~/.claude.json should exist: %v", freshErr)
+	}
+	if string(freshData) != "{}" {
+		t.Errorf("~/.claude.json should be empty JSON for new profile, got %q", string(freshData))
 	}
 }
 
@@ -516,5 +561,321 @@ func TestActivateDeactivateRoundtrip(t *testing.T) {
 	fi, _ := os.Lstat(claudePath)
 	if !isSymlink(fi) {
 		t.Errorf("should be a symlink after re-activation")
+	}
+}
+
+func TestActivatePreservesAuthOnSwitch(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+	claudeJSON := filepath.Join(fakeHome, ".claude.json")
+
+	// Simulate existing auth in ~/.claude.json
+	if err := os.WriteFile(claudeJSON, []byte(`{"oauthAccount":{"email":"user@example.com"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a second profile for switching
+	if err := createProfile(cfg, "test-profile-2", "", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// First activation of test-profile (no --current, so no pre-seeded external state)
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("activate test-profile: %v", err)
+	}
+
+	// Auth should be preserved — first activation seeds external state from backup
+	data, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("~/.claude.json should exist after first activation: %v", err)
+	}
+	if string(data) != `{"oauthAccount":{"email":"user@example.com"}}` {
+		t.Errorf("auth lost on first activation: got %q", string(data))
+	}
+
+	// Switch to test-profile-2 (fresh, no auth expected)
+	if err := activateProfile(cfg, "test-profile-2", false); err != nil {
+		t.Fatalf("activate test-profile-2: %v", err)
+	}
+
+	// test-profile-2 has no saved external state — ~/.claude.json should be empty JSON
+	freshData, freshErr := os.ReadFile(claudeJSON)
+	if freshErr != nil {
+		t.Fatalf("~/.claude.json should exist: %v", freshErr)
+	}
+	if string(freshData) != "{}" {
+		t.Errorf("~/.claude.json should be empty JSON for fresh profile, got %q", string(freshData))
+	}
+
+	// Switch back to test-profile — auth should be restored
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("switch back to test-profile: %v", err)
+	}
+
+	data, err = os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("~/.claude.json should be restored: %v", err)
+	}
+	if string(data) != `{"oauthAccount":{"email":"user@example.com"}}` {
+		t.Errorf("auth not restored after switch back: got %q", string(data))
+	}
+}
+
+func TestActivateWithStaleBackup(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+	claudePath := filepath.Join(fakeHome, ".claude")
+
+	// Activate (backs up ~/.claude, creates symlink)
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Nuke (flattens generated dir into real ~/.claude, deletes APM dir)
+	if err := nukeAPM(cfg); err != nil {
+		t.Fatalf("nuke: %v", err)
+	}
+
+	// Re-initialize APM (simulates user running apm again after nuke)
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := createProfile(cfg, "new-profile", "", "fresh start"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a stale claude_home_path into config to simulate leftover state
+	cf, err := cfg.readConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create a stale backup dir
+	staleBackup := cfg.BackupDir()
+	if err := os.MkdirAll(staleBackup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleBackup, "stale.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cf.ClaudeHomePath = staleBackup
+	if err := cfg.writeConfigFile(cf); err != nil {
+		t.Fatal(err)
+	}
+
+	// This used to fail with "backup already exists; resolve manually"
+	if err := activateProfile(cfg, "new-profile", false); err != nil {
+		t.Fatalf("activate should succeed with stale backup: %v", err)
+	}
+
+	// Should be a symlink now
+	fi, err := os.Lstat(claudePath)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	if !isSymlink(fi) {
+		t.Error("~/.claude should be a symlink after activation")
+	}
+
+	// Stale backup content should be replaced with current ~/.claude content
+	if _, err := os.Stat(filepath.Join(cfg.BackupDir(), "stale.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("stale backup content should have been replaced")
+	}
+}
+
+func TestNukePreservesCurrentState(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+	claudePath := filepath.Join(fakeHome, ".claude")
+
+	// Create ~/.claude.json with original auth
+	claudeJSON := filepath.Join(fakeHome, ".claude.json")
+	if err := os.WriteFile(claudeJSON, []byte(`{"auth":"original"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Activate (backs up ~/.claude, creates symlink)
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Simulate auth token refresh and runtime state while profile is active
+	if err := os.WriteFile(claudeJSON, []byte(`{"auth":"updated-token"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	genDir := cfg.GeneratedProfileDir("test-profile")
+	if err := os.WriteFile(filepath.Join(genDir, "runtime-state.json"), []byte(`{"state":"active"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nuke
+	if err := nukeAPM(cfg); err != nil {
+		t.Fatalf("nukeAPM: %v", err)
+	}
+
+	// ~/.claude should be a real directory (not a symlink)
+	fi, err := os.Lstat(claudePath)
+	if err != nil {
+		t.Fatalf("~/.claude should exist after nuke: %v", err)
+	}
+	if isSymlink(fi) {
+		t.Error("~/.claude should be a real directory, not a symlink")
+	}
+	if !fi.IsDir() {
+		t.Error("~/.claude should be a directory")
+	}
+
+	// ~/.claude.json should have the UPDATED token (not the stale original)
+	data, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("~/.claude.json should exist: %v", err)
+	}
+	if string(data) != `{"auth":"updated-token"}` {
+		t.Errorf("~/.claude.json should preserve current auth, got %q", string(data))
+	}
+
+	// Runtime state should be preserved in flattened ~/.claude
+	data, err = os.ReadFile(filepath.Join(claudePath, "runtime-state.json"))
+	if err != nil {
+		t.Fatalf("runtime state should be preserved: %v", err)
+	}
+	if string(data) != `{"state":"active"}` {
+		t.Errorf("runtime state content wrong: got %q", string(data))
+	}
+
+	// .apm-meta.json should be removed (APM-specific artifact)
+	if _, err := os.Stat(filepath.Join(claudePath, ".apm-meta.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Error(".apm-meta.json should be removed after nuke")
+	}
+
+	// APM directory should be gone
+	if _, err := os.Stat(cfg.APMDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("APM directory should be removed after nuke")
+	}
+}
+
+func TestNukeResolvesSymlinks(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+	claudePath := filepath.Join(fakeHome, ".claude")
+
+	// Create a skill file in the profile
+	profileSkillsDir := filepath.Join(cfg.ProfilesDir, "test-profile", "skills")
+	if err := os.MkdirAll(profileSkillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileSkillsDir, "my-skill.md"), []byte("skill content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Activate (generates profile with skill symlinks)
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Verify the generated dir has the skill (as a symlink)
+	genDir := cfg.GeneratedProfileDir("test-profile")
+	genSkill := filepath.Join(genDir, "skills", "my-skill.md")
+	fi, err := os.Lstat(genSkill)
+	if err != nil {
+		t.Fatalf("generated skill should exist: %v", err)
+	}
+	if !isSymlink(fi) {
+		t.Fatalf("generated skill should be a symlink")
+	}
+
+	// Nuke
+	if err := nukeAPM(cfg); err != nil {
+		t.Fatalf("nukeAPM: %v", err)
+	}
+
+	// Skills should exist as real files (not symlinks) in ~/.claude/skills/
+	skillPath := filepath.Join(claudePath, "skills", "my-skill.md")
+	fi, err = os.Lstat(skillPath)
+	if err != nil {
+		t.Fatalf("skill should exist after nuke: %v", err)
+	}
+	if isSymlink(fi) {
+		t.Error("skill should be a real file after nuke, not a symlink")
+	}
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "skill content" {
+		t.Errorf("skill content wrong: got %q", string(data))
+	}
+}
+
+func TestNukePreservesExternalSymlinkTargets(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+
+	// Create an external directory (outside APM) with a skill file,
+	// simulating a user's skill repo symlinked into a profile.
+	externalDir := filepath.Join(fakeHome, "my-skills-repo")
+	if err := os.MkdirAll(externalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(externalDir, "external-skill.md"), []byte("external skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink the external skill into the profile's skills dir
+	profileSkillsDir := filepath.Join(cfg.ProfilesDir, "test-profile", "skills")
+	if err := os.MkdirAll(profileSkillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(externalDir, "external-skill.md"),
+		filepath.Join(profileSkillsDir, "external-skill.md"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Activate
+	if err := activateProfile(cfg, "test-profile", false); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Nuke
+	if err := nukeAPM(cfg); err != nil {
+		t.Fatalf("nukeAPM: %v", err)
+	}
+
+	// The external skill file must still exist — nuke must not delete it
+	data, err := os.ReadFile(filepath.Join(externalDir, "external-skill.md"))
+	if err != nil {
+		t.Fatalf("external skill file was deleted by nuke: %v", err)
+	}
+	if string(data) != "external skill" {
+		t.Errorf("external skill content changed: got %q", string(data))
+	}
+}
+
+func TestNukeNoActiveProfile(t *testing.T) {
+	cfg, fakeHome := setupActivateTest(t)
+	claudePath := filepath.Join(fakeHome, ".claude")
+
+	// Don't activate any profile — ~/.claude is a real directory
+
+	// Nuke should succeed
+	if err := nukeAPM(cfg); err != nil {
+		t.Fatalf("nukeAPM should succeed: %v", err)
+	}
+
+	// ~/.claude should still be a real directory with original content
+	fi, err := os.Lstat(claudePath)
+	if err != nil {
+		t.Fatalf("~/.claude should still exist: %v", err)
+	}
+	if isSymlink(fi) {
+		t.Error("~/.claude should remain a real directory")
+	}
+	data, err := os.ReadFile(filepath.Join(claudePath, "some-file.txt"))
+	if err != nil {
+		t.Fatalf("original content should be preserved: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("original content wrong: got %q", string(data))
+	}
+
+	// APM directory should be gone
+	if _, err := os.Stat(cfg.APMDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("APM directory should be removed after nuke")
 	}
 }

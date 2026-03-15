@@ -58,7 +58,7 @@ Import your current Claude Code settings:
 apm create --current
 ```
 
-This creates a profile named "default", imports your existing `~/.claude/settings.json` and managed directories, backs up `~/.claude`, and activates the profile. The auto-activation happens because the profile is named "default" — any profile named "default" is automatically set as the global default and activated.
+This creates a profile named "default", imports your existing `~/.claude/settings.json` and managed directories, backs up `~/.claude`, and activates the profile. All newly created profiles are automatically activated. A profile named "default" is additionally set as the global default for new shells.
 
 ### Create additional profiles
 
@@ -105,6 +105,7 @@ This provides:
 | `apm delete <name>` | `rm` | Delete a profile |
 | `apm regenerate [name]` | `regen` | Rebuild a profile's generated directory |
 | `apm backup` | | Snapshot current `~/.claude` to backup |
+| `apm nuke` | | Remove all APM data and restore original `~/.claude` |
 | `apm current` | | Output active profile name |
 | `apm init <bash\|zsh>` | | Output shell integration script |
 
@@ -114,13 +115,13 @@ This provides:
 
 ```bash
 apm create                              # creates "default", auto-activates
-apm create work                         # creates empty "work" profile
-apm create work --current               # imports from current ~/.claude
-apm create work --from personal         # copies from existing profile
+apm create work                         # creates empty "work", auto-activates
+apm create work --current               # imports from current ~/.claude, auto-activates
+apm create work --from personal         # copies from existing profile, auto-activates
 apm create work --description "My work" # with description
 ```
 
-If a profile named "default" is created, it is automatically set as the global default and activated.
+All profiles are automatically activated on creation. A profile named "default" is additionally set as the global default for new shells.
 
 ### `apm use`
 
@@ -144,6 +145,17 @@ apm regenerate --all    # rebuild all profiles
 ```
 
 Regeneration preserves runtime state (history, sessions, cache) created by Claude Code. Only managed items (settings, managed directories, symlinks) are rebuilt.
+
+### `apm nuke`
+
+Completely removes APM from your system while preserving your current state. If a profile is active, the generated directory is flattened into a real `~/.claude` (symlinks resolved to real files) and `~/.claude.json` is left untouched. Then the entire APM config directory is deleted.
+
+```bash
+apm nuke           # prompts for confirmation
+apm nuke --force   # skips confirmation
+```
+
+After nuke, your `~/.claude` and `~/.claude.json` retain their current contents — auth, skills, plugins, and settings survive. All APM profiles, generated data, and common settings are deleted.
 
 ## Settings Merge Rules
 
@@ -217,9 +229,11 @@ Extra files (anything not in the managed set, like `CLAUDE.md`) from common and 
 
 ## External State Isolation
 
-APM isolates `~/.claude.json` (which stores OAuth tokens and auth state) per profile. When switching profiles, the current profile's `~/.claude.json` is captured and the new profile's is restored. This enables using different Claude accounts across profiles.
+APM isolates `~/.claude.json` (which stores OAuth account metadata and per-project settings) per profile. When switching profiles, the current profile's `~/.claude.json` is captured and the new profile's is restored. This enables using different Claude accounts across profiles.
 
-When switching to a profile for the first time (no saved external state), `~/.claude.json` is removed to prompt fresh authentication. Your original auth is preserved in the backup and restored when you deactivate all profiles.
+When activating a profile for the first time, the current `~/.claude.json` is automatically seeded as that profile's external state so auth is preserved. When switching to a profile that has never been used (no saved external state), `~/.claude.json` is reset to `{}` to prompt fresh authentication.
+
+On macOS, OAuth tokens are stored in the macOS Keychain (not in files), so `~/.claude.json` primarily contains account metadata (`oauthAccount`) that tells Claude which account to use.
 
 ## Profile Metadata
 

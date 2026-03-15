@@ -159,8 +159,9 @@ The core activation/deactivation machinery. This is the most complex module — 
 |-------|--------|
 | `skipSymlink=true` (dev mode) | Returns `errSkipSymlink` immediately |
 | Symlink exists (switching profiles) | Capture old profile's external state, remove symlink |
-| Real directory exists (first activation) | Move to backup, capture external state backup |
-| Real directory + backup already exists | Error: inconsistent state, resolve manually |
+| Real directory exists (first activation) | Capture external state to both backup and profile dirs, move to backup |
+| Real directory + stale backup exists | Replace stale backup with current state, re-backup |
+| Real directory + custom `claude_dir` | Skip backup (user manages their own) |
 | Does not exist | Create empty backup dir |
 
 After state handling:
@@ -168,6 +169,8 @@ After state handling:
 2. Creates symlink: `~/.claude` → `generated/<name>`
 3. Restores new profile's external state (`~/.claude.json`)
 4. Records `active_profile` in config.yaml
+
+The backup phase captures `~/.claude.json` to both the backup external dir AND the profile's external state dir. This ensures the first `restoreExternalState()` call finds auth data, preventing auth loss on first activation.
 
 Cross-filesystem moves (e.g., `~/.claude` on one mount, APM config on another) are detected via `syscall.EXDEV` with a helpful error message.
 
@@ -180,15 +183,31 @@ Cross-filesystem moves (e.g., `~/.claude` on one mount, APM config on another) a
 
 **`backupClaude(cfg)`** — manual backup command. Refuses if a profile is active (because `~/.claude` would be a symlink, not the real config). Copies `~/.claude` directory tree + captures `~/.claude.json`. Also writes `claude_home` to config.yaml so that `loadConfig()` resolves `ClaudeDir` to the backup path on subsequent runs.
 
+**`nukeAPM(cfg)`** — removes APM while preserving current state. Does NOT call `deactivateProfile` (which would restore a stale backup). Instead:
+
+| State of `~/.claude` | Action |
+|----------------------|--------|
+| Symlink (profile active) | Read symlink target, remove symlink, `copyDirFlat` generated dir → real `~/.claude`, remove `.apm-meta.json`. Leave `~/.claude.json` untouched. |
+| Real directory (no active profile) | Leave as-is |
+| Does not exist | Restore from backup if available, restore `~/.claude.json` from backup |
+
+After state handling: `unlinkAll(APMDir)` to safely remove all symlinks, then `os.RemoveAll(APMDir)`. The `unlinkAll` step prevents `RemoveAll` from following symlinks into external directories (e.g., user skill repos).
+
 **External state isolation** — `captureExternalState()` / `restoreExternalState()` / `restoreExternalStateTo()`:
-- `~/.claude.json` stores OAuth tokens and auth state
+- `~/.claude.json` stores OAuth account metadata (`oauthAccount`) and per-project settings. On macOS, actual OAuth tokens live in the Keychain.
 - Each profile has a `profiles/<name>/external/claude.json` for its auth state
 - On profile switch: old profile's state is captured, new profile's state is restored
-- On first use of a new profile: if no saved state exists, `~/.claude.json` is **removed** to prompt fresh authentication
+- On first activation: `~/.claude.json` is seeded to the profile's external state dir so auth is preserved
+- On first use of a never-used profile: if no saved state exists, `~/.claude.json` is written as `{}` (empty JSON object) to prompt fresh authentication without triggering Claude's "config file not found" warning
 - Backup external state stored in `claude-home-external/claude.json`
 - `restoreExternalStateTo(src, dst)` copies external state between arbitrary directories (used during profile overwrite)
+- The `external/` directory inside profile dirs is excluded from generation (`linkExtrasFrom` skips it)
 
 **`copyDir(src, dst)`** — recursive copy using `filepath.WalkDir`. Preserves symlinks (copies the link, not the target). Used by backup, import, and seed operations.
+
+**`copyDirFlat(src, dst)`** — like `copyDir` but follows symlinks (uses `os.Stat` instead of `os.Lstat`). Produces a self-contained directory with no symlinks. Skips dangling symlinks with a warning. Used by `nukeAPM` to flatten the generated dir into a real `~/.claude`.
+
+**`unlinkAll(dir)`** — walks a directory and removes all symlinks. Called before `os.RemoveAll` in `nukeAPM` to prevent following symlinks into external directories during deletion.
 
 ### generate.go
 
@@ -277,7 +296,7 @@ All Cobra commands and the CLI framework setup.
 - Name defaults to `"default"` if omitted
 - Flags: `--current` (import from `~/.claude`), `--from <profile>` (copy), `--description`
 - If profile exists: prompts for overwrite confirmation; if confirmed, deactivates (if active), deletes, recreates, preserves external state via temp dir
-- If name is `"default"`: auto-sets as global default and activates
+- All profiles are auto-activated on creation. If name is `"default"`, also set as global default.
 - Seeds runtime state and captures external state for `--current` profiles
 
 **`useCmd`** — `apm use <profile>`:
@@ -314,6 +333,12 @@ All Cobra commands and the CLI framework setup.
 - When regenerating all: active profile is regenerated last with a warning
 
 **`backupCmd`** — `apm backup`: snapshots current `~/.claude` to backup location
+
+**`nukeCmd`** — `apm nuke`:
+- Flag: `--force` (skip confirmation prompt)
+- Shows what will be removed (profile count, APM dir path), prompts for confirmation
+- Calls `nukeAPM()` which preserves current state then removes APM (see activate.go section)
+- Warns if `APM_PROFILE` env var is still set in the current shell
 
 ### dev.go (build tag: dev)
 

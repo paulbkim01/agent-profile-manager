@@ -225,8 +225,8 @@ func linkExtrasFrom(srcDir, genDir, label string, linked map[string]bool) error 
 			continue
 		}
 
-		// Skip profile metadata
-		if name == "profile.yaml" {
+		// Skip profile metadata and internal APM directories
+		if name == "profile.yaml" || name == externalDirName {
 			continue
 		}
 

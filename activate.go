@@ -51,9 +51,9 @@ func restoreExternalState(sourceDir string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			log.Printf("activate: no saved external state at %s, removing ~/.claude.json for fresh setup", sourceDir)
-			if err := os.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("removing %s: %w", dst, err)
+			log.Printf("activate: no saved external state at %s, writing empty ~/.claude.json for fresh setup", sourceDir)
+			if err := atomicWriteFile(dst, []byte("{}"), 0o600); err != nil {
+				return fmt.Errorf("writing empty %s: %w", dst, err)
 			}
 			return nil
 		}
@@ -130,13 +130,20 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 		}
 
 	case lstatErr == nil && fi.IsDir():
-		if alreadyBacked || hasOverride {
-			return fmt.Errorf(
-				"%s is a directory but backup already exists at %s; resolve manually",
-				claudePath, backupPath,
-			)
+		if hasOverride {
+			// User has a custom claude_dir — don't touch ~/.claude
+			needsBackup = false
+		} else if alreadyBacked {
+			// Stale backup exists (e.g. after nuke flattened ~/.claude back).
+			// Replace it with the current ~/.claude which is the source of truth.
+			log.Printf("activate: replacing stale backup at %s", backupPath)
+			if err := os.RemoveAll(backupPath); err != nil {
+				return fmt.Errorf("removing stale backup %s: %w", backupPath, err)
+			}
+			needsBackup = true
+		} else {
+			needsBackup = true
 		}
-		needsBackup = true
 
 	case errors.Is(lstatErr, os.ErrNotExist):
 		if !alreadyBacked && !hasOverride {
@@ -158,6 +165,15 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 
 	// Backup real ~/.claude if needed (must happen before generation).
 	if needsBackup {
+		// Capture external state BEFORE moving ~/.claude (uses ~/.claude.json)
+		if err := captureExternalState(cfg.BackupExternalDir()); err != nil {
+			return fmt.Errorf("capturing external state backup: %w", err)
+		}
+		// Also seed the profile's external state so the first restore finds it
+		if err := captureExternalState(cfg.ExternalStateDir(name)); err != nil {
+			return fmt.Errorf("capturing external state for '%s': %w", name, err)
+		}
+
 		logInfo("Backing up ~/.claude to %s ...", backupPath)
 		if err := os.Rename(claudePath, backupPath); err != nil {
 			if errors.Is(err, syscall.EXDEV) {
@@ -176,11 +192,6 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 			return fmt.Errorf("saving config: %w", err)
 		}
 		logSuccess("Backed up ~/.claude (restore with: apm use --unset)")
-
-		// Also capture external state to backup
-		if err := captureExternalState(cfg.BackupExternalDir()); err != nil {
-			return fmt.Errorf("capturing external state backup: %w", err)
-		}
 	}
 
 	// Regenerate profile (cfg.ClaudeDir now points to backup or user override)
@@ -256,9 +267,17 @@ func deactivateProfile(cfg *Config) error {
 	// Restore backup if we have one
 	if cf.ClaudeHomePath != "" {
 		if _, statErr := os.Stat(cf.ClaudeHomePath); statErr == nil {
-			log.Printf("deactivate: restoring %s -> %s", cf.ClaudeHomePath, claudePath)
-			if err := os.Rename(cf.ClaudeHomePath, claudePath); err != nil {
-				return fmt.Errorf("restoring %s: %w", claudePath, err)
+			// Only restore if claudePath doesn't already exist (e.g. symlink
+			// was removed above, or ~/.claude never existed). If it exists as
+			// a real directory, the user already has a working ~/.claude —
+			// don't overwrite it with the backup.
+			if _, existErr := os.Lstat(claudePath); errors.Is(existErr, os.ErrNotExist) {
+				log.Printf("deactivate: restoring %s -> %s", cf.ClaudeHomePath, claudePath)
+				if err := os.Rename(cf.ClaudeHomePath, claudePath); err != nil {
+					return fmt.Errorf("restoring %s: %w", claudePath, err)
+				}
+			} else {
+				log.Printf("deactivate: %s already exists, skipping backup restore", claudePath)
 			}
 		}
 	}
@@ -324,6 +343,82 @@ func backupClaude(cfg *Config) error {
 	return cfg.writeConfigFile(cf)
 }
 
+// nukeAPM completely removes all APM state while preserving the current
+// ~/.claude and ~/.claude.json content. Unlike deactivateProfile (which
+// restores a stale backup), nuke flattens the active generated dir into a
+// real ~/.claude so that auth tokens, skills, and plugins survive.
+func nukeAPM(cfg *Config) error {
+	claudePath, err := defaultClaudeDir()
+	if err != nil {
+		return err
+	}
+
+	fi, lstatErr := os.Lstat(claudePath)
+
+	switch {
+	case lstatErr == nil && isSymlink(fi):
+		// Active profile — flatten generated dir into real ~/.claude
+		genDir, err := os.Readlink(claudePath)
+		if err != nil {
+			return fmt.Errorf("reading symlink %s: %w", claudePath, err)
+		}
+
+		// Remove the symlink
+		if err := os.Remove(claudePath); err != nil {
+			return fmt.Errorf("removing symlink %s: %w", claudePath, err)
+		}
+
+		// Copy generated dir contents, resolving symlinks to real files
+		if err := copyDirFlat(genDir, claudePath); err != nil {
+			return fmt.Errorf("flattening %s to %s: %w", genDir, claudePath, err)
+		}
+
+		// Remove APM-specific artifact
+		os.Remove(filepath.Join(claudePath, ".apm-meta.json"))
+
+		// Leave ~/.claude.json untouched — it has the current auth
+
+	case lstatErr == nil && fi.IsDir():
+		// No active profile — ~/.claude is already a real directory, leave it
+		log.Printf("nuke: %s is a real directory, leaving as-is", claudePath)
+
+	case errors.Is(lstatErr, os.ErrNotExist):
+		// ~/.claude doesn't exist — restore from backup if available
+		cf, err := cfg.readConfigFile()
+		if err == nil && cf.ClaudeHomePath != "" {
+			if _, statErr := os.Stat(cf.ClaudeHomePath); statErr == nil {
+				log.Printf("nuke: restoring backup %s -> %s", cf.ClaudeHomePath, claudePath)
+				if err := os.Rename(cf.ClaudeHomePath, claudePath); err != nil {
+					return fmt.Errorf("restoring %s: %w", claudePath, err)
+				}
+			}
+		}
+		// Restore ~/.claude.json from backup external dir
+		if err := restoreExternalState(cfg.BackupExternalDir()); err != nil {
+			return fmt.Errorf("restoring external state backup: %w", err)
+		}
+
+	default:
+		if lstatErr != nil {
+			return fmt.Errorf("checking %s: %w", claudePath, lstatErr)
+		}
+	}
+
+	// Unlink all symlinks in APM dir before removal, so RemoveAll
+	// cannot follow symlinks into external directories.
+	if err := unlinkAll(cfg.APMDir); err != nil {
+		return fmt.Errorf("unlinking symlinks in %s: %w", cfg.APMDir, err)
+	}
+
+	// Remove entire APM directory
+	log.Printf("nuke: removing %s", cfg.APMDir)
+	if err := os.RemoveAll(cfg.APMDir); err != nil {
+		return fmt.Errorf("removing %s: %w", cfg.APMDir, err)
+	}
+
+	return nil
+}
+
 // copyDir recursively copies src to dst, preserving symlinks.
 func copyDir(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
@@ -359,5 +454,65 @@ func copyDir(src, dst string) error {
 			return err
 		}
 		return os.WriteFile(target, data, info.Mode())
+	})
+}
+
+// copyDirFlat recursively copies src to dst, resolving symlinks to real files.
+// Unlike copyDir, this follows symlinks (using os.Stat) so the result is a
+// self-contained directory with no symlinks that could become dangling.
+func copyDirFlat(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+
+		// Use Stat (not Lstat) to follow symlinks
+		info, err := os.Stat(path)
+		if err != nil {
+			// Dangling symlink — skip with warning
+			if errors.Is(err, os.ErrNotExist) {
+				log.Printf("copyDirFlat: skipping dangling symlink %s", path)
+				return nil
+			}
+			return err
+		}
+
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
+}
+
+// unlinkAll removes all symlinks within dir so that a subsequent
+// os.RemoveAll cannot follow symlinks into external directories.
+func unlinkAll(dir string) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		info, lErr := os.Lstat(path)
+		if lErr != nil {
+			return nil
+		}
+		if isSymlink(info) {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unlinking %s: %w", path, err)
+			}
+		}
+		return nil
 	})
 }

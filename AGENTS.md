@@ -56,6 +56,8 @@ Or use `just build`, `just test`, `just dev`.
 3. **Profile wins on conflict.** In every merge (settings, dirs, extras).
 4. **Null sentinel deletes keys.** Setting a value to `null` in profile removes it from output.
 5. **Symlink mode vs dev mode.** Normal: `~/.claude` symlink. Dev: `CLAUDE_CONFIG_DIR` env var.
+6. **`nuke` is the escape hatch.** Preserves current `~/.claude` and `~/.claude.json` state, flattens symlinks to real files, then removes APM config dir.
+7. **Auto-activate on create.** All newly created profiles are immediately activated.
 
 ## Managed items (what APM controls)
 

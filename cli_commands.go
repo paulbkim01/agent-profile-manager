@@ -67,16 +67,26 @@ var (
 	createDesc    string
 )
 
-// confirmOverwrite prompts the user to confirm overwriting an existing profile.
-// Returns false if stdin is not interactive or user declines.
-var confirmOverwrite = func(name string) bool {
-	fmt.Fprintf(os.Stderr, "Profile '%s' already exists. Overwrite? [y/N]: ", name)
+// confirmPrompt prints a [y/N] prompt to stderr and returns true if the user
+// answers "y" or "yes". Returns false on EOF, empty input, or any other answer.
+func confirmPrompt(msg string) bool {
+	fmt.Fprint(os.Stderr, msg)
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		return answer == "y" || answer == "yes"
 	}
 	return false
+}
+
+// confirmOverwrite prompts the user to confirm overwriting an existing profile.
+var confirmOverwrite = func(name string) bool {
+	return confirmPrompt(fmt.Sprintf("Profile '%s' already exists. Overwrite? [y/N]: ", name))
+}
+
+// confirmNuke prompts the user to confirm a destructive nuke operation.
+var confirmNuke = func() bool {
+	return confirmPrompt("This will permanently remove all APM data. Continue? [y/N]: ")
 }
 
 // exactlyOneArg returns a cobra Args validator that requires exactly one argument
@@ -172,30 +182,30 @@ var createCmd = &cobra.Command{
 			}
 		}
 
-		// Auto-activate the default profile
+		// Auto-set default if profile is named "default"
 		if name == "default" {
 			if err := cfg.SetDefaultProfile(name); err != nil {
 				return fmt.Errorf("setting default: %w", err)
 			}
+		}
 
-			devMode := cmd.Flags().Changed("config-dir")
-			activateErr := activateProfile(cfg, name, devMode)
-			if errors.Is(activateErr, errSkipSymlink) {
-				if err := generateProfile(cfg, name); err != nil {
-					return fmt.Errorf("generating profile: %w", err)
-				}
-				// Dev mode: still handle external state
-				if err := restoreExternalState(cfg.ExternalStateDir(name)); err != nil {
-					return fmt.Errorf("restoring external state: %w", err)
-				}
-			} else if activateErr != nil {
-				return fmt.Errorf("activating profile: %w", activateErr)
+		// Auto-activate the newly created profile
+		devMode := cmd.Flags().Changed("config-dir")
+		activateErr := activateProfile(cfg, name, devMode)
+		if errors.Is(activateErr, errSkipSymlink) {
+			if err := generateProfile(cfg, name); err != nil {
+				return fmt.Errorf("generating profile: %w", err)
 			}
-		} else {
-			if source == "" {
-				fmt.Fprintf(os.Stderr, "Edit it with: apm edit %s\n", name)
+			// Dev mode: still handle external state
+			if err := restoreExternalState(cfg.ExternalStateDir(name)); err != nil {
+				return fmt.Errorf("restoring external state: %w", err)
 			}
-			fmt.Fprintf(os.Stderr, "Activate with: eval \"$(apm use %s)\"\n", name)
+		} else if activateErr != nil {
+			return fmt.Errorf("activating profile: %w", activateErr)
+		}
+
+		if source == "" {
+			fmt.Fprintf(os.Stderr, "Edit it with: apm edit %s\n", name)
 		}
 		return nil
 	},
@@ -777,6 +787,54 @@ Use this command to update the backup at any time.`,
 	},
 }
 
+// Flag var — also listed in resetFlags() in cli_commands_test.go.
+var nukeForce bool
+
+var nukeCmd = &cobra.Command{
+	Use:   "nuke",
+	Short: "Remove all APM data and restore original ~/.claude",
+	Long: `Completely removes APM: deactivates any active profile, restores the
+original ~/.claude and ~/.claude.json from backup, and deletes the
+entire APM config directory.
+
+This is irreversible. Use --force to skip the confirmation prompt.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig(configDir)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		profiles, _ := listProfiles(cfg)
+		logWarn("This will permanently remove:")
+		if len(profiles) > 0 {
+			logInfo("  %d profile(s)", len(profiles))
+		}
+		logInfo("  All generated profile data")
+		logInfo("  APM config directory: %s", cfg.APMDir)
+
+		if !nukeForce {
+			if !confirmNuke() {
+				fmt.Fprintf(os.Stderr, "Aborted.\n")
+				return nil
+			}
+		}
+
+		if err := nukeAPM(cfg); err != nil {
+			return fmt.Errorf("nuke failed: %w", err)
+		}
+
+		logSuccess("APM removed. Original ~/.claude restored.")
+
+		if os.Getenv("APM_PROFILE") != "" {
+			logWarn("APM_PROFILE is still set in this shell.")
+			logInfo("Run: unset APM_PROFILE CLAUDE_CONFIG_DIR")
+		}
+
+		return nil
+	},
+}
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "verbose logging to stderr")
@@ -791,7 +849,8 @@ func init() {
 	useCmd.Flags().Bool("unset", false, "deactivate profile in current shell")
 	deleteCmd.Flags().BoolVar(&deleteForce, "force", false, "delete even if profile is active")
 	regenerateCmd.Flags().BoolVar(&regenAll, "all", false, "regenerate all profiles")
+	nukeCmd.Flags().BoolVar(&nukeForce, "force", false, "skip confirmation prompt")
 
 	// Register commands
-	rootCmd.AddCommand(createCmd, useCmd, deleteCmd, describeCmd, editCmd, lsCmd, currentCmd, initCmd, regenerateCmd, backupCmd)
+	rootCmd.AddCommand(createCmd, useCmd, deleteCmd, describeCmd, editCmd, lsCmd, currentCmd, initCmd, regenerateCmd, backupCmd, nukeCmd)
 }

@@ -30,6 +30,7 @@ func resetFlags() {
 	useGlobal = false
 	debug = false
 	configDir = ""
+	nukeForce = false
 	// Reset Cobra-managed flags that aren't package-level vars
 	useCmd.Flags().Set("unset", "false")
 }
@@ -1088,4 +1089,128 @@ func getProjectRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return wd
+}
+
+func TestNukeWithProfiles(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Create some profiles
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "prof-a")
+	if err != nil {
+		t.Fatalf("create prof-a failed: %v", err)
+	}
+	_, err = executeWithStdout(t, "--config-dir", dir, "create", "prof-b")
+	if err != nil {
+		t.Fatalf("create prof-b failed: %v", err)
+	}
+
+	// Verify profiles exist
+	profileDir := filepath.Join(dir, "profiles", "prof-a")
+	if _, err := os.Stat(profileDir); err != nil {
+		t.Fatalf("profile should exist before nuke: %v", err)
+	}
+
+	// Nuke with --force — stdout should be empty (all output goes to stderr)
+	out, err := executeWithStdout(t, "--config-dir", dir, "nuke", "--force")
+	if err != nil {
+		t.Fatalf("nuke failed: %v", err)
+	}
+	if out != "" {
+		t.Errorf("nuke should not write to stdout (got %q)", out)
+	}
+
+	// APM directory should be gone
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("APM directory should be removed after nuke")
+	}
+}
+
+func TestNukeNoProfiles(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Nuke an empty APM dir
+	_, err := executeWithStdout(t, "--config-dir", dir, "nuke", "--force")
+	if err != nil {
+		t.Fatalf("nuke failed: %v", err)
+	}
+
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("APM directory should be removed after nuke")
+	}
+}
+
+func TestNukeRequiresConfirmation(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Mock confirmNuke to decline
+	oldConfirm := confirmNuke
+	confirmNuke = func() bool { return false }
+	defer func() { confirmNuke = oldConfirm }()
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "nuke")
+	if err != nil {
+		t.Fatalf("nuke should not error when declined: %v", err)
+	}
+
+	// APM dir should still exist
+	if _, err := os.Stat(dir); err != nil {
+		t.Error("APM directory should still exist after declined nuke")
+	}
+}
+
+func TestNukeForceSkipsConfirmation(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// --force should skip confirmation
+	_, err = executeWithStdout(t, "--config-dir", dir, "nuke", "--force")
+	if err != nil {
+		t.Fatalf("nuke --force failed: %v", err)
+	}
+
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("APM directory should be removed")
+	}
+}
+
+func TestNukeWithActiveProfile(t *testing.T) {
+	dir := setupTestEnv(t)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Create and "activate" a profile (dev mode with --config-dir)
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "active-test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	_, err = executeWithStdout(t, "--config-dir", dir, "use", "active-test")
+	if err != nil {
+		t.Fatalf("use failed: %v", err)
+	}
+
+	// Nuke
+	_, err = executeWithStdout(t, "--config-dir", dir, "nuke", "--force")
+	if err != nil {
+		t.Fatalf("nuke failed: %v", err)
+	}
+
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("APM directory should be removed after nuke")
+	}
+}
+
+func TestNukeWarnsAboutEnvVar(t *testing.T) {
+	dir := setupTestEnv(t)
+	t.Setenv("APM_PROFILE", "stale-profile")
+
+	// Nuke should succeed and warn about stale env var
+	// (warning goes to stderr, not captured by executeWithStdout)
+	_, err := executeWithStdout(t, "--config-dir", dir, "nuke", "--force")
+	if err != nil {
+		t.Fatalf("nuke failed: %v", err)
+	}
 }
