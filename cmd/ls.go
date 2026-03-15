@@ -30,7 +30,7 @@ var lsCmd = &cobra.Command{
 		log.Printf("ls: found %d profiles", len(profiles))
 
 		if len(profiles) == 0 {
-			fmt.Println("No profiles. Create one with: apm create <name>")
+			fmt.Println("No profiles. Create one with: apm create <name> --from current --default")
 			return nil
 		}
 

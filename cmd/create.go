@@ -8,13 +8,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/paulbkim/agent-profile-manager/internal/config"
+	"github.com/paulbkim/agent-profile-manager/internal/generate"
 	"github.com/paulbkim/agent-profile-manager/internal/profile"
 )
 
 // Flag vars — also listed in resetFlags() in cmd_test.go.
 var (
-	createFrom string
-	createDesc string
+	createFrom    string
+	createDesc    string
+	createDefault bool
 )
 
 var createCmd = &cobra.Command{
@@ -42,10 +44,22 @@ var createCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Created profile '%s'\n", name)
-		if createFrom == "" {
-			fmt.Fprintf(os.Stderr, "Edit it with: apm edit %s\n", name)
+
+		if createDefault {
+			if err := generate.Profile(cfg, name); err != nil {
+				return fmt.Errorf("generating profile: %w", err)
+			}
+			if err := cfg.SetDefaultProfile(name); err != nil {
+				return fmt.Errorf("setting default: %w", err)
+			}
+			fmt.Printf("Global default set to '%s'\n", name)
+			log.Printf("create: set global default to '%s'", name)
+		} else {
+			if createFrom == "" {
+				fmt.Fprintf(os.Stderr, "Edit it with: apm edit %s\n", name)
+			}
+			fmt.Fprintf(os.Stderr, "Activate with: eval \"$(apm use %s)\"\n", name)
 		}
-		fmt.Fprintf(os.Stderr, "Activate with: eval \"$(apm use %s)\"\n", name)
 		return nil
 	},
 }
@@ -53,5 +67,6 @@ var createCmd = &cobra.Command{
 func init() {
 	createCmd.Flags().StringVar(&createFrom, "from", "", "import from 'current' or another profile name")
 	createCmd.Flags().StringVar(&createDesc, "description", "", "profile description")
+	createCmd.Flags().BoolVar(&createDefault, "default", false, "set as global default after creating")
 	rootCmd.AddCommand(createCmd)
 }

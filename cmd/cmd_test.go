@@ -46,6 +46,7 @@ func setupTestEnv(t *testing.T) string {
 func resetFlags() {
 	createFrom = ""
 	createDesc = ""
+	createDefault = false
 	deleteForce = false
 	regenAll = false
 	useGlobal = false
@@ -324,6 +325,9 @@ func TestListEmpty(t *testing.T) {
 	if !strings.Contains(out, "No profiles") {
 		t.Errorf("expected 'No profiles' message: %s", out)
 	}
+	if !strings.Contains(out, "--from current --default") {
+		t.Errorf("expected nudge with --default flag: %s", out)
+	}
 }
 
 func TestListAlias(t *testing.T) {
@@ -570,5 +574,75 @@ func TestCreateFromProfile(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "opus") {
 		t.Errorf("expected copied settings, got: %s", string(data))
+	}
+}
+
+func TestCreateWithDefault(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "default-test", "--default")
+	if err != nil {
+		t.Fatalf("create --default failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Created profile 'default-test'") {
+		t.Errorf("expected Created message: %s", out)
+	}
+	if !strings.Contains(out, "Global default set to 'default-test'") {
+		t.Errorf("expected global default message: %s", out)
+	}
+
+	// Verify config.yaml has the default set
+	configData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading config.yaml: %v", err)
+	}
+	if !strings.Contains(string(configData), "default_profile: default-test") {
+		t.Errorf("expected default_profile in config.yaml, got: %s", string(configData))
+	}
+
+	// Verify generated dir was created
+	genDir := filepath.Join(dir, "generated", "default-test")
+	if _, err := os.Stat(genDir); err != nil {
+		t.Errorf("generated dir not created: %v", err)
+	}
+}
+
+func TestCreateFromCurrentWithDefault(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Create a fake claude dir with settings
+	claudeDir := filepath.Join(dir, "claude-home")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"model": "sonnet"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write config.yaml pointing to the fake claude dir
+	configYaml := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configYaml, []byte("claude_dir: "+claudeDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "from-current", "--from", "current", "--default")
+	if err != nil {
+		t.Fatalf("create --from current --default failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Created profile 'from-current'") {
+		t.Errorf("expected Created message: %s", out)
+	}
+	if !strings.Contains(out, "Global default set to 'from-current'") {
+		t.Errorf("expected global default message: %s", out)
+	}
+
+	// Verify settings were imported
+	profileSettings := filepath.Join(dir, "profiles", "from-current", "settings.json")
+	data, err := os.ReadFile(profileSettings)
+	if err != nil {
+		t.Fatalf("reading profile settings: %v", err)
+	}
+	if !strings.Contains(string(data), "sonnet") {
+		t.Errorf("expected imported settings, got: %s", string(data))
 	}
 }
