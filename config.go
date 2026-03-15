@@ -200,6 +200,16 @@ func (c *Config) BackupDir() string {
 	return filepath.Join(c.APMDir, claudeHomeDirName)
 }
 
+// BackupExternalDir returns the path to the backed-up ~/.claude.json.
+func (c *Config) BackupExternalDir() string {
+	return filepath.Join(c.APMDir, "claude-home-external")
+}
+
+// ExternalStateDir returns the per-profile external state directory.
+func (c *Config) ExternalStateDir(name string) string {
+	return filepath.Join(c.ProfilesDir, name, externalDirName)
+}
+
 // ProfileDir returns the path for a specific profile.
 func (c *Config) ProfileDir(name string) string {
 	return filepath.Join(c.ProfilesDir, name)
@@ -210,10 +220,11 @@ func (c *Config) GeneratedProfileDir(name string) string {
 	return filepath.Join(c.GeneratedDir, name)
 }
 
-// CleanGeneratedDirs removes all generated profile directories.
-func (c *Config) CleanGeneratedDirs() {
-	if err := os.RemoveAll(c.GeneratedDir); err == nil {
-		os.MkdirAll(c.GeneratedDir, 0o755)
+// CleanGeneratedDir removes a specific profile's generated directory.
+func (c *Config) CleanGeneratedDir(name string) {
+	genDir := c.GeneratedProfileDir(name)
+	if err := os.RemoveAll(genDir); err != nil {
+		log.Printf("config: failed to remove generated dir %s: %v", genDir, err)
 	}
 }
 
@@ -246,6 +257,15 @@ func (c *Config) EnsureDirs() error {
 		}
 		if err := os.WriteFile(commonSettings, []byte("{}\n"), 0o644); err != nil {
 			return fmt.Errorf("creating %s: %w", commonSettings, err)
+		}
+	}
+
+	// Create .gitignore to prevent accidental commit of OAuth tokens
+	gitignorePath := filepath.Join(c.APMDir, ".gitignore")
+	if _, err := os.Stat(gitignorePath); errors.Is(err, os.ErrNotExist) {
+		content := "# Prevent committing OAuth tokens and session state\n*/external/\nclaude-home-external/\n"
+		if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("creating %s: %w", gitignorePath, err)
 		}
 	}
 

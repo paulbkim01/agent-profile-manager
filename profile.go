@@ -243,6 +243,65 @@ func importFrom(src, dst string) error {
 	return nil
 }
 
+// seedRuntimeState copies all non-managed items from claudeDir to genDir.
+// Used when creating a profile from current state to preserve runtime files
+// (history, sessions, plugins, etc.) in the generated dir.
+func seedRuntimeState(claudeDir, genDir string) error {
+	entries, err := os.ReadDir(claudeDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", claudeDir, err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		// Skip managed items — they are generated from common + profile
+		if managedItemSet[name] {
+			continue
+		}
+		// Skip profile metadata
+		if name == "profile.yaml" {
+			continue
+		}
+		src := filepath.Join(claudeDir, name)
+		dst := filepath.Join(genDir, name)
+		// Skip if already exists in genDir
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		fi, err := os.Lstat(src)
+		if err != nil {
+			continue
+		}
+		if fi.IsDir() {
+			if err := copyDir(src, dst); err != nil {
+				return fmt.Errorf("copying %s: %w", name, err)
+			}
+			log.Printf("seed: copied dir %s", name)
+		} else if isSymlink(fi) {
+			link, err := os.Readlink(src)
+			if err != nil {
+				return fmt.Errorf("reading symlink %s: %w", src, err)
+			}
+			if err := os.Symlink(link, dst); err != nil {
+				return fmt.Errorf("creating symlink %s: %w", dst, err)
+			}
+			log.Printf("seed: symlinked %s", name)
+		} else {
+			data, err := os.ReadFile(src)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", src, err)
+			}
+			if err := os.WriteFile(dst, data, fi.Mode()); err != nil {
+				return fmt.Errorf("writing %s: %w", dst, err)
+			}
+			log.Printf("seed: copied file %s", name)
+		}
+	}
+	return nil
+}
+
 func writeMeta(dir string, meta ProfileMeta) error {
 	data, err := yaml.Marshal(&meta)
 	if err != nil {

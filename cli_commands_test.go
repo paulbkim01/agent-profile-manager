@@ -857,6 +857,229 @@ func TestUseUnsetPipeEmitsUnset(t *testing.T) {
 	}
 }
 
+func TestDevModeExternalState(t *testing.T) {
+	dir := setupTestEnv(t)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Create two profiles
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "prof-a")
+	if err != nil {
+		t.Fatalf("create prof-a failed: %v", err)
+	}
+	_, err = executeWithStdout(t, "--config-dir", dir, "create", "prof-b")
+	if err != nil {
+		t.Fatalf("create prof-b failed: %v", err)
+	}
+
+	// Create fake ~/.claude.json
+	claudeJSON := filepath.Join(fakeHome, ".claude.json")
+	if err := os.WriteFile(claudeJSON, []byte(`{"auth":"a-token"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use prof-a in dev mode
+	_, err = executeWithStdout(t, "--config-dir", dir, "use", "prof-a")
+	if err != nil {
+		t.Fatalf("use prof-a failed: %v", err)
+	}
+
+	// Write prof-a's external state manually (simulating what the capture above did)
+	extDirA := filepath.Join(dir, "profiles", "prof-a", "external")
+	if err := os.MkdirAll(extDirA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDirA, "claude.json"), []byte(`{"auth":"a-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write prof-b's external state
+	extDirB := filepath.Join(dir, "profiles", "prof-b", "external")
+	if err := os.MkdirAll(extDirB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDirB, "claude.json"), []byte(`{"auth":"b-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Switch to prof-b in dev mode — should restore prof-b's external state
+	_, err = executeWithStdout(t, "--config-dir", dir, "use", "prof-b")
+	if err != nil {
+		t.Fatalf("use prof-b failed: %v", err)
+	}
+
+	// Verify ~/.claude.json now has prof-b's auth
+	data, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"auth":"b-token"}` {
+		t.Errorf("expected prof-b auth, got %q", string(data))
+	}
+}
+
+func TestDevModeCreateExternalState(t *testing.T) {
+	dir := setupTestEnv(t)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Create fake ~/.claude dir with settings for --current
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"model":"test"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point config to it
+	configYaml := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configYaml, []byte("claude_dir: "+claudeDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create ~/.claude.json
+	claudeJSON := filepath.Join(fakeHome, ".claude.json")
+	if err := os.WriteFile(claudeJSON, []byte(`{"auth":"my-token"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create profile with --current in dev mode
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "--current", "current-test")
+	if err != nil {
+		t.Fatalf("create --current failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Created profile 'current-test'") {
+		t.Errorf("unexpected output: %s", out)
+	}
+
+	// External state should have been captured
+	extDir := filepath.Join(dir, "profiles", "current-test", "external")
+	data, err := os.ReadFile(filepath.Join(extDir, "claude.json"))
+	if err != nil {
+		t.Fatalf("external state not captured: %v", err)
+	}
+	if string(data) != `{"auth":"my-token"}` {
+		t.Errorf("captured auth = %q, want original", string(data))
+	}
+}
+
+func TestRegenerateAllActiveProfileGuard(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Create two profiles
+	for _, name := range []string{"regen-a", "regen-b"} {
+		_, err := executeWithStdout(t, "--config-dir", dir, "create", name)
+		if err != nil {
+			t.Fatalf("create %s failed: %v", name, err)
+		}
+	}
+
+	// Simulate an active profile in config
+	cfg, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetActiveProfile("regen-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add runtime state to the active profile's generated dir
+	genDir := cfg.GeneratedProfileDir("regen-a")
+	if err := os.MkdirAll(genDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genDir, "history.jsonl"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Regenerate all
+	out, err := executeWithStdout(t, "--config-dir", dir, "regenerate", "--all")
+	if err != nil {
+		t.Fatalf("regenerate --all failed: %v\noutput: %s", err, out)
+	}
+
+	// Both should be regenerated
+	if !strings.Contains(out, "Regenerated 'regen-a'") {
+		t.Errorf("expected regen-a in output: %s", out)
+	}
+	if !strings.Contains(out, "Regenerated 'regen-b'") {
+		t.Errorf("expected regen-b in output: %s", out)
+	}
+
+	// Runtime state should be preserved (not wiped by os.RemoveAll)
+	data, err := os.ReadFile(filepath.Join(genDir, "history.jsonl"))
+	if err != nil {
+		t.Fatalf("runtime state lost after regenerate --all: %v", err)
+	}
+	if string(data) != "keep" {
+		t.Errorf("runtime state changed: %q", string(data))
+	}
+}
+
+func TestEnsureDirsCreatesGitignore(t *testing.T) {
+	cfg := newTestConfig(t)
+
+	gitignorePath := filepath.Join(cfg.APMDir, ".gitignore")
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf(".gitignore not created: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "*/external/") {
+		t.Errorf(".gitignore should contain '*/external/', got: %s", content)
+	}
+	if !strings.Contains(content, "claude-home-external/") {
+		t.Errorf(".gitignore should contain 'claude-home-external/', got: %s", content)
+	}
+}
+
+func TestCreateOverwritePreservesExternalState(t *testing.T) {
+	dir := setupTestEnv(t)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Create a profile
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "overwrite-test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// Create ~/.claude.json
+	claudeJSON := filepath.Join(fakeHome, ".claude.json")
+	if err := os.WriteFile(claudeJSON, []byte(`{"auth":"original"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store external state for the profile
+	extDir := filepath.Join(dir, "profiles", "overwrite-test", "external")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "claude.json"), []byte(`{"auth":"saved"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Overwrite confirmed
+	confirmOverwrite = func(name string) bool { return true }
+	defer func() { confirmOverwrite = func(string) bool { return false } }()
+
+	// Create again (overwrite)
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "overwrite-test")
+	if err != nil {
+		t.Fatalf("overwrite create failed: %v", err)
+	}
+	if !strings.Contains(out, "Created profile 'overwrite-test'") {
+		t.Errorf("expected Created message: %s", out)
+	}
+
+	// Profile should still exist
+	profileDir := filepath.Join(dir, "profiles", "overwrite-test")
+	if _, err := os.Stat(profileDir); err != nil {
+		t.Fatalf("profile dir not recreated: %v", err)
+	}
+}
+
 // getProjectRoot returns the project root directory.
 func getProjectRoot(t *testing.T) string {
 	t.Helper()

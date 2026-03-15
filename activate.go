@@ -13,6 +13,83 @@ import (
 // signaling the caller to fall back to env-var-based activation.
 var errSkipSymlink = errors.New("skip symlink activation")
 
+// captureExternalState copies ~/.claude.json to targetDir/claude.json.
+// Skips gracefully if ~/.claude.json doesn't exist.
+func captureExternalState(targetDir string) error {
+	src, err := claudeJSONPath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("activate: no ~/.claude.json to capture")
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", src, err)
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", targetDir, err)
+	}
+	dst := filepath.Join(targetDir, "claude.json")
+	if err := atomicWriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", dst, err)
+	}
+	log.Printf("activate: captured external state to %s", dst)
+	return nil
+}
+
+// restoreExternalState copies sourceDir/claude.json to ~/.claude.json.
+// If sourceDir doesn't exist or has no claude.json (first-time profile use),
+// ~/.claude.json is removed so Claude prompts for first-time setup.
+func restoreExternalState(sourceDir string) error {
+	dst, err := claudeJSONPath()
+	if err != nil {
+		return err
+	}
+	src := filepath.Join(sourceDir, "claude.json")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("activate: no saved external state at %s, removing ~/.claude.json for fresh setup", sourceDir)
+			if err := os.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("removing %s: %w", dst, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", src, err)
+	}
+	if err := atomicWriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", dst, err)
+	}
+	log.Printf("activate: restored external state from %s", src)
+	return nil
+}
+
+// restoreExternalStateTo copies sourceDir/claude.json to dstDir/claude.json.
+// Used for copying external state between arbitrary directories (e.g. during
+// profile overwrite). Unlike restoreExternalState, this does not remove the
+// destination file when no source exists — it simply returns nil.
+func restoreExternalStateTo(sourceDir, dstDir string) error {
+	src := filepath.Join(sourceDir, "claude.json")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", src, err)
+	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", dstDir, err)
+	}
+	dst := filepath.Join(dstDir, "claude.json")
+	if err := atomicWriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", dst, err)
+	}
+	log.Printf("activate: copied external state from %s to %s", sourceDir, dstDir)
+	return nil
+}
+
 // activateProfile makes ~/.claude a symlink to the generated profile directory.
 //
 // If skipSymlink is true (dev mode / --config-dir override), it returns
@@ -45,7 +122,12 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 
 	switch {
 	case lstatErr == nil && isSymlink(fi):
-		// Switching profiles — old symlink will be removed after generation
+		// Switching profiles — capture old profile's external state before switch
+		if cf.ActiveProfile != "" {
+			if err := captureExternalState(cfg.ExternalStateDir(cf.ActiveProfile)); err != nil {
+				return fmt.Errorf("capturing external state for '%s': %w", cf.ActiveProfile, err)
+			}
+		}
 
 	case lstatErr == nil && fi.IsDir():
 		if alreadyBacked || hasOverride {
@@ -94,10 +176,12 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 			return fmt.Errorf("saving config: %w", err)
 		}
 		logSuccess("Backed up ~/.claude (restore with: apm use --unset)")
-	}
 
-	// Clean all old generated dirs before rebuilding
-	cfg.CleanGeneratedDirs()
+		// Also capture external state to backup
+		if err := captureExternalState(cfg.BackupExternalDir()); err != nil {
+			return fmt.Errorf("capturing external state backup: %w", err)
+		}
+	}
 
 	// Regenerate profile (cfg.ClaudeDir now points to backup or user override)
 	if err := generateProfile(cfg, name); err != nil {
@@ -119,6 +203,11 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 	}
 	log.Printf("activate: %s -> %s", claudePath, genDir)
 
+	// Restore new profile's external state
+	if err := restoreExternalState(cfg.ExternalStateDir(name)); err != nil {
+		return fmt.Errorf("restoring external state for '%s': %w", name, err)
+	}
+
 	// Record active profile in config (reuse already-loaded cf)
 	cf.ActiveProfile = name
 	if err := cfg.writeConfigFile(cf); err != nil {
@@ -128,9 +217,10 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 	return nil
 }
 
-// deactivateProfile removes the ~/.claude symlink, cleans all generated dirs,
-// and restores the backed-up real directory. It is a no-op if no profile is
-// currently activated.
+// deactivateProfile removes the ~/.claude symlink and restores the backed-up
+// real directory. Generated profile directories are preserved on disk for
+// future reactivation. Use 'apm delete <name>' to permanently remove a
+// profile and its generated dir.
 func deactivateProfile(cfg *Config) error {
 	claudePath, err := defaultClaudeDir()
 	if err != nil {
@@ -142,17 +232,26 @@ func deactivateProfile(cfg *Config) error {
 		return err
 	}
 
+	// Capture active profile's external state before deactivation
+	if cf.ActiveProfile != "" {
+		if err := captureExternalState(cfg.ExternalStateDir(cf.ActiveProfile)); err != nil {
+			return fmt.Errorf("capturing external state for '%s': %w", cf.ActiveProfile, err)
+		}
+	}
+
 	// Remove symlink if present
 	fi, err := os.Lstat(claudePath)
-	if err == nil && isSymlink(fi) {
+	switch {
+	case err == nil && isSymlink(fi):
 		log.Printf("deactivate: removing symlink %s", claudePath)
 		if err := os.Remove(claudePath); err != nil {
 			return fmt.Errorf("removing symlink %s: %w", claudePath, err)
 		}
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("checking %s: %w", claudePath, err)
+	default:
+		log.Printf("deactivate: %s is not a symlink, skipping removal", claudePath)
 	}
-
-	// Clean all generated dirs
-	cfg.CleanGeneratedDirs()
 
 	// Restore backup if we have one
 	if cf.ClaudeHomePath != "" {
@@ -164,14 +263,19 @@ func deactivateProfile(cfg *Config) error {
 		}
 	}
 
+	// Restore backup external state
+	if err := restoreExternalState(cfg.BackupExternalDir()); err != nil {
+		return fmt.Errorf("restoring external state backup: %w", err)
+	}
+
 	// Clear activation state
 	return cfg.ClearActiveProfile()
 }
 
-// backupClaude copies the current ~/.claude state to the backup location.
-// Only works when no profile is active (i.e. ~/.claude is a real directory).
-// When a profile is active, ~/.claude is a symlink to a minimal generated dir,
-// so backing it up would destroy the real backup.
+// backupClaude copies the current ~/.claude state AND ~/.claude.json to the
+// APM backup locations. Only works when no profile is active (i.e. ~/.claude
+// is a real directory, not a symlink). The backup serves as the restore point
+// when deactivating all profiles.
 func backupClaude(cfg *Config) error {
 	claudePath, err := defaultClaudeDir()
 	if err != nil {
@@ -204,6 +308,11 @@ func backupClaude(cfg *Config) error {
 	// Copy directory tree
 	if err := copyDir(claudePath, backupPath); err != nil {
 		return fmt.Errorf("copying %s to %s: %w", claudePath, backupPath, err)
+	}
+
+	// Also capture external state (/.claude.json) to backup
+	if err := captureExternalState(cfg.BackupExternalDir()); err != nil {
+		return fmt.Errorf("capturing external state backup: %w", err)
 	}
 
 	// Record in config

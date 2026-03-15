@@ -10,8 +10,47 @@ import (
 	"path/filepath"
 )
 
+// cleanManagedItems removes only managed items and root-level symlinks from genDir.
+// Runtime state (files/dirs created by Claude CLI) is preserved.
+func cleanManagedItems(genDir string) error {
+	// Remove items in managedItemSet
+	for name := range managedItemSet {
+		path := filepath.Join(genDir, name)
+		if err := os.RemoveAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing managed item %s: %w", name, err)
+		}
+	}
+
+	// Remove root-level symlinks only (extras from common/profile).
+	// Runtime-created regular files/dirs are preserved.
+	entries, err := os.ReadDir(genDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading generated dir: %w", err)
+	}
+	for _, e := range entries {
+		path := filepath.Join(genDir, e.Name())
+		fi, err := os.Lstat(path)
+		if err != nil {
+			continue
+		}
+		if isSymlink(fi) {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("removing symlink %s: %w", path, err)
+			}
+			log.Printf("generate: removed symlink %s", e.Name())
+		}
+	}
+
+	return nil
+}
+
 // generateProfile builds the generated directory for a profile.
-// Cleans and rebuilds from scratch each time.
+// Preserves runtime state (files created by Claude CLI) across rebuilds.
+// Only managed items (settings, skills, commands, agents, rules, meta)
+// and root-level symlinks are cleaned before regeneration.
 func generateProfile(cfg *Config, name string) error {
 	genDir := cfg.GeneratedProfileDir(name)
 	profileDir := cfg.ProfileDir(name)
@@ -24,9 +63,9 @@ func generateProfile(cfg *Config, name string) error {
 		return fmt.Errorf("checking profile directory: %w", err)
 	}
 
-	// Clean previous generated dir
-	if err := os.RemoveAll(genDir); err != nil {
-		return fmt.Errorf("removing previous generated dir: %w", err)
+	// Clean only managed items, preserving runtime state
+	if err := cleanManagedItems(genDir); err != nil {
+		return fmt.Errorf("cleaning managed items: %w", err)
 	}
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return fmt.Errorf("creating generated dir: %w", err)

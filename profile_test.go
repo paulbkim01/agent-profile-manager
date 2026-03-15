@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -270,6 +271,95 @@ func TestImportWithSymlinks(t *testing.T) {
 	}
 	if !isSymlink(info) {
 		t.Error("expected symlink to be preserved")
+	}
+}
+
+func TestDeleteCleansGeneratedDir(t *testing.T) {
+	cfg := testProfileConfig(t)
+	if err := createProfile(cfg, "temp", "", ""); err != nil {
+		t.Fatalf("createProfile: %v", err)
+	}
+
+	// Generate the profile to create a generated dir
+	if err := generateProfile(cfg, "temp"); err != nil {
+		t.Fatal(err)
+	}
+	genDir := cfg.GeneratedProfileDir("temp")
+
+	// Add some runtime state to the generated dir
+	if err := os.WriteFile(filepath.Join(genDir, "history.jsonl"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the profile
+	if err := deleteProfile(cfg, "temp", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generated dir should be removed
+	if _, err := os.Stat(genDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("generated dir should be removed after delete")
+	}
+
+	// Profile dir should be removed
+	if profileExists(cfg, "temp") {
+		t.Error("profile should be deleted")
+	}
+}
+
+func TestSeedRuntimeState(t *testing.T) {
+	cfg := testProfileConfig(t)
+
+	// Add runtime files to claude dir
+	if err := os.WriteFile(filepath.Join(cfg.ClaudeDir, "history.jsonl"), []byte("history"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.ClaudeDir, "sessions", "abc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.ClaudeDir, "sessions", "abc", "data.json"), []byte("session"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create target dir with settings.json (managed item — should be skipped)
+	genDir := filepath.Join(cfg.GeneratedDir, "test")
+	if err := os.MkdirAll(genDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genDir, "settings.json"), []byte("generated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed runtime state
+	if err := seedRuntimeState(cfg.ClaudeDir, genDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runtime files should be copied
+	data, err := os.ReadFile(filepath.Join(genDir, "history.jsonl"))
+	if err != nil {
+		t.Fatalf("history.jsonl not seeded: %v", err)
+	}
+	if string(data) != "history" {
+		t.Errorf("history.jsonl = %q, want %q", string(data), "history")
+	}
+
+	// Runtime dirs should be copied
+	data, err = os.ReadFile(filepath.Join(genDir, "sessions", "abc", "data.json"))
+	if err != nil {
+		t.Fatalf("sessions not seeded: %v", err)
+	}
+	if string(data) != "session" {
+		t.Errorf("session data = %q, want %q", string(data), "session")
+	}
+
+	// Managed items should NOT be overwritten
+	data, err = os.ReadFile(filepath.Join(genDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "generated" {
+		t.Errorf("settings.json should be preserved, got %q", string(data))
 	}
 }
 

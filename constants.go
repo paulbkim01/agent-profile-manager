@@ -11,12 +11,16 @@ var managedDirs = []string{
 	"skills",
 	"commands",
 	"agents",
+	"rules",
 }
 
 // managedItemSet is the set of all files/dirs that profiles control.
 // These are merged from common + profile during generation.
 var managedItemSet = func() map[string]bool {
-	s := map[string]bool{"settings.json": true}
+	s := map[string]bool{
+		"settings.json":  true,
+		".apm-meta.json": true,
+	}
 	for _, d := range managedDirs {
 		s[d] = true
 	}
@@ -26,14 +30,20 @@ var managedItemSet = func() map[string]bool {
 // claudeHomeDirName is the directory name used to back up ~/.claude during activation.
 const claudeHomeDirName = "claude-home"
 
+// externalDirName is the subdirectory within a profile that stores external state
+// (e.g. ~/.claude.json) for per-profile isolation.
+const externalDirName = "external"
+
 // reservedNames cannot be used as profile names.
 var reservedNames = map[string]bool{
-	"common":      true,
-	"generated":   true,
-	"config":      true,
-	"current":     true,
-	"state":       true,
-	"claude-home": true,
+	"common":                true,
+	"generated":             true,
+	"config":                true,
+	"current":               true,
+	"state":                 true,
+	"claude-home":           true,
+	"claude-home-external":  true,
+	"external":              true,
 }
 
 // defaultClaudeDir returns ~/.claude.
@@ -46,6 +56,15 @@ func defaultClaudeDir() (string, error) {
 		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
 	return filepath.Join(home, ".claude"), nil
+}
+
+// claudeJSONPath returns ~/.claude.json.
+func claudeJSONPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude.json"), nil
 }
 
 // defaultAPMDir returns ~/.config/apm (or $XDG_CONFIG_HOME/apm).

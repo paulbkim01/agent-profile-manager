@@ -34,7 +34,7 @@ func setupGenerateTest(t *testing.T) *Config {
 	if err := os.MkdirAll(profDir, 0o755); err != nil {
 		t.Fatalf("creating profile dir: %v", err)
 	}
-	for _, sub := range []string{"skills", "commands", "agents"} {
+	for _, sub := range managedDirs {
 		if err := os.MkdirAll(filepath.Join(profDir, sub), 0o755); err != nil {
 			t.Fatalf("creating profile %s dir: %v", sub, err)
 		}
@@ -99,7 +99,7 @@ func TestGenerate(t *testing.T) {
 	}
 
 	// Check managed dirs exist as real directories (not symlinks)
-	for _, dir := range []string{"skills", "commands", "agents"} {
+	for _, dir := range managedDirs {
 		fi, err := os.Lstat(filepath.Join(genDir, dir))
 		if err != nil {
 			t.Errorf("expected %s dir: %v", dir, err)
@@ -331,5 +331,160 @@ func TestGenerateMetaHash(t *testing.T) {
 	}
 	if len(hash) != 64 {
 		t.Errorf("expected SHA-256 hash (64 hex chars), got length %d", len(hash))
+	}
+}
+
+func TestGeneratePreservesRuntimeState(t *testing.T) {
+	cfg := setupGenerateTest(t)
+
+	// First generate
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	genDir := cfg.GeneratedProfileDir("work")
+
+	// Simulate runtime state created by Claude CLI
+	runtimeFiles := map[string]string{
+		"history.jsonl":         `{"event":"test"}`,
+		"settings.local.json":  `{"local":true}`,
+		"stats-cache.json":     `{"stats":1}`,
+		"statusline.sh":        `#!/bin/sh`,
+	}
+	for name, content := range runtimeFiles {
+		if err := os.WriteFile(filepath.Join(genDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("creating runtime file %s: %v", name, err)
+		}
+	}
+
+	// Create runtime directories
+	runtimeDirs := []string{"sessions", "cache", "projects", "file-history"}
+	for _, dir := range runtimeDirs {
+		dirPath := filepath.Join(genDir, dir)
+		if err := os.MkdirAll(dirPath, 0o755); err != nil {
+			t.Fatalf("creating runtime dir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dirPath, "data.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatalf("writing data in %s: %v", dir, err)
+		}
+	}
+
+	// Regenerate — should preserve all runtime state
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatalf("second generate: %v", err)
+	}
+
+	// Verify runtime files are preserved
+	for name, expectedContent := range runtimeFiles {
+		data, err := os.ReadFile(filepath.Join(genDir, name))
+		if err != nil {
+			t.Errorf("runtime file %s was lost after regeneration: %v", name, err)
+			continue
+		}
+		if string(data) != expectedContent {
+			t.Errorf("runtime file %s content changed: got %q, want %q", name, string(data), expectedContent)
+		}
+	}
+
+	// Verify runtime dirs are preserved
+	for _, dir := range runtimeDirs {
+		dataPath := filepath.Join(genDir, dir, "data.json")
+		if _, err := os.Stat(dataPath); err != nil {
+			t.Errorf("runtime dir %s was lost after regeneration: %v", dir, err)
+		}
+	}
+
+	// Verify managed items were still regenerated properly
+	if _, err := os.Stat(filepath.Join(genDir, "settings.json")); err != nil {
+		t.Error("settings.json missing after regeneration")
+	}
+	if _, err := os.Stat(filepath.Join(genDir, ".apm-meta.json")); err != nil {
+		t.Error(".apm-meta.json missing after regeneration")
+	}
+}
+
+func TestCleanManagedItems(t *testing.T) {
+	cfg := setupGenerateTest(t)
+
+	// Generate first
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	genDir := cfg.GeneratedProfileDir("work")
+
+	// Add a runtime file
+	if err := os.WriteFile(filepath.Join(genDir, "history.jsonl"), []byte("runtime"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Add a runtime directory
+	if err := os.MkdirAll(filepath.Join(genDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run cleanManagedItems
+	if err := cleanManagedItems(genDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Managed items should be removed
+	for name := range managedItemSet {
+		if _, err := os.Lstat(filepath.Join(genDir, name)); err == nil {
+			t.Errorf("managed item %s should have been removed", name)
+		}
+	}
+
+	// Runtime items should be preserved
+	if _, err := os.Stat(filepath.Join(genDir, "history.jsonl")); err != nil {
+		t.Error("runtime file history.jsonl should be preserved")
+	}
+	if _, err := os.Stat(filepath.Join(genDir, "sessions")); err != nil {
+		t.Error("runtime dir sessions should be preserved")
+	}
+}
+
+func TestCleanManagedItemsPreservesRuntimeNameCollision(t *testing.T) {
+	cfg := setupGenerateTest(t)
+
+	// Add an extra to common (will become a symlink in genDir)
+	if err := os.WriteFile(filepath.Join(cfg.CommonDir, "CLAUDE.md"), []byte("common"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	genDir := cfg.GeneratedProfileDir("work")
+
+	// Verify CLAUDE.md is a symlink
+	fi, err := os.Lstat(filepath.Join(genDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isSymlink(fi) {
+		t.Fatal("expected CLAUDE.md to be a symlink")
+	}
+
+	// Now replace the symlink with a regular file (simulating Claude CLI creating it)
+	os.Remove(filepath.Join(genDir, "CLAUDE.md"))
+	if err := os.WriteFile(filepath.Join(genDir, "CLAUDE.md"), []byte("runtime version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Regenerate — the runtime regular file should be preserved
+	// (cleanManagedItems only removes symlinks for extras, and
+	// linkExtrasFrom skips when dst already exists)
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(genDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "runtime version" {
+		t.Errorf("expected runtime version of CLAUDE.md to be preserved, got %q", string(data))
 	}
 }

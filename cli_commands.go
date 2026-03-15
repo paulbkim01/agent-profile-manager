@@ -121,15 +121,34 @@ var createCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "Aborted.\n")
 				return nil
 			}
-			// Deactivate if this was the active profile
+
 			activeProfile, _ := cfg.ActiveProfile()
-			if activeProfile == name {
+			wasActive := activeProfile == name
+
+			// If overwriting the active profile, capture external state to
+			// a temp dir before deactivate+delete destroys it
+			overwriteTmp := filepath.Join(cfg.APMDir, ".overwrite-tmp")
+			if wasActive {
+				if err := captureExternalState(overwriteTmp); err != nil {
+					return fmt.Errorf("capturing external state before overwrite: %w", err)
+				}
+				defer os.RemoveAll(overwriteTmp)
+
 				if err := deactivateProfile(cfg); err != nil {
 					return fmt.Errorf("deactivating profile: %w", err)
 				}
 			}
 			if err := deleteProfile(cfg, name, true); err != nil {
 				return fmt.Errorf("removing existing profile: %w", err)
+			}
+
+			// Defer restoration of external state after new profile is created
+			if wasActive {
+				defer func() {
+					if err := restoreExternalStateTo(overwriteTmp, cfg.ExternalStateDir(name)); err != nil {
+						log.Printf("warning: failed to restore external state after overwrite: %v", err)
+					}
+				}()
 			}
 		}
 
@@ -138,6 +157,20 @@ var createCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Created profile '%s'\n", name)
+
+		// Seed runtime state and capture external state for --current profiles
+		if source == "current" {
+			genDir := cfg.GeneratedProfileDir(name)
+			if err := os.MkdirAll(genDir, 0o755); err != nil {
+				return fmt.Errorf("creating generated dir: %w", err)
+			}
+			if err := seedRuntimeState(cfg.ClaudeDir, genDir); err != nil {
+				return fmt.Errorf("seeding runtime state: %w", err)
+			}
+			if err := captureExternalState(cfg.ExternalStateDir(name)); err != nil {
+				return fmt.Errorf("capturing external state: %w", err)
+			}
+		}
 
 		// Auto-activate the default profile
 		if name == "default" {
@@ -150,6 +183,10 @@ var createCmd = &cobra.Command{
 			if errors.Is(activateErr, errSkipSymlink) {
 				if err := generateProfile(cfg, name); err != nil {
 					return fmt.Errorf("generating profile: %w", err)
+				}
+				// Dev mode: still handle external state
+				if err := restoreExternalState(cfg.ExternalStateDir(name)); err != nil {
+					return fmt.Errorf("restoring external state: %w", err)
 				}
 			} else if activateErr != nil {
 				return fmt.Errorf("activating profile: %w", activateErr)
@@ -251,9 +288,27 @@ var useCmd = &cobra.Command{
 		// Try symlink activation (skipped in dev mode)
 		err = activateProfile(cfg, name, devMode)
 		if errors.Is(err, errSkipSymlink) {
-			// Dev mode fallback: generate and output env var exports
+			// Dev mode fallback: capture old profile's external state,
+			// generate, and restore new profile's external state
+			cf, cfErr := cfg.readConfigFile()
+			if cfErr != nil {
+				return fmt.Errorf("reading config: %w", cfErr)
+			}
+			if cf.ActiveProfile != "" && cf.ActiveProfile != name {
+				if err := captureExternalState(cfg.ExternalStateDir(cf.ActiveProfile)); err != nil {
+					return fmt.Errorf("capturing external state for '%s': %w", cf.ActiveProfile, err)
+				}
+			}
 			if err := generateProfile(cfg, name); err != nil {
 				return fmt.Errorf("generating profile: %w", err)
+			}
+			if err := restoreExternalState(cfg.ExternalStateDir(name)); err != nil {
+				return fmt.Errorf("restoring external state for '%s': %w", name, err)
+			}
+			// Record active profile in dev mode too
+			cf.ActiveProfile = name
+			if err := cfg.writeConfigFile(cf); err != nil {
+				return fmt.Errorf("saving active profile: %w", err)
 			}
 			genDir := cfg.GeneratedProfileDir(name)
 
@@ -332,7 +387,6 @@ var deleteCmd = &cobra.Command{
 		}
 		if needsDeactivate {
 			logInfo("Removing symlink ~/.claude ...")
-			logInfo("Cleaning generated directories ...")
 			if err := deactivateProfile(cfg); err != nil {
 				return fmt.Errorf("deactivating profile: %w", err)
 			}
@@ -644,12 +698,36 @@ var regenerateCmd = &cobra.Command{
 				fmt.Println("No profiles to regenerate.")
 				return nil
 			}
-			for _, p := range profiles {
+
+			// Determine active profile so we can regenerate it last
+			activeProfile, _ := cfg.ActiveProfile()
+			var activeIdx = -1
+			for i, p := range profiles {
+				if p.Meta.Name == activeProfile {
+					activeIdx = i
+					break
+				}
+			}
+
+			for i, p := range profiles {
+				if i == activeIdx {
+					continue // defer active profile to last
+				}
 				if err := generateProfile(cfg, p.Meta.Name); err != nil {
 					return fmt.Errorf("regenerating '%s': %w", p.Meta.Name, err)
 				}
 				fmt.Printf("Regenerated '%s'\n", p.Meta.Name)
 			}
+
+			// Regenerate active profile last with a warning
+			if activeIdx >= 0 {
+				logWarn("Regenerating active profile '%s'. Ensure Claude CLI is not running.", activeProfile)
+				if err := generateProfile(cfg, activeProfile); err != nil {
+					return fmt.Errorf("regenerating '%s': %w", activeProfile, err)
+				}
+				fmt.Printf("Regenerated '%s'\n", activeProfile)
+			}
+
 			return nil
 		}
 
