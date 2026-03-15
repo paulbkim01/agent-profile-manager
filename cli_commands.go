@@ -792,10 +792,11 @@ var nukeForce bool
 
 var nukeCmd = &cobra.Command{
 	Use:   "nuke",
-	Short: "Remove all APM data and restore original ~/.claude",
-	Long: `Completely removes APM: deactivates any active profile, restores the
-original ~/.claude and ~/.claude.json from backup, and deletes the
-entire APM config directory.
+	Short: "Remove all profiles and restore original ~/.claude",
+	Long: `Removes all profiles and generated data: deactivates any active profile,
+restores the original ~/.claude and ~/.claude.json from backup, and
+deletes profiles and generated directories. The common directory is
+preserved.
 
 This is irreversible. Use --force to skip the confirmation prompt.`,
 	Args: cobra.NoArgs,
@@ -811,7 +812,7 @@ This is irreversible. Use --force to skip the confirmation prompt.`,
 			logInfo("  %d profile(s)", len(profiles))
 		}
 		logInfo("  All generated profile data")
-		logInfo("  APM config directory: %s", cfg.APMDir)
+		logInfo("  Common directory will be preserved")
 
 		if !nukeForce {
 			if !confirmNuke() {
@@ -824,7 +825,7 @@ This is irreversible. Use --force to skip the confirmation prompt.`,
 			return fmt.Errorf("nuke failed: %w", err)
 		}
 
-		logSuccess("APM removed. Original ~/.claude restored.")
+		logSuccess("Profiles removed. Original ~/.claude restored.")
 
 		if os.Getenv("APM_PROFILE") != "" {
 			logWarn("APM_PROFILE is still set in this shell.")

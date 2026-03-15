@@ -1119,9 +1119,22 @@ func TestNukeWithProfiles(t *testing.T) {
 		t.Errorf("nuke should not write to stdout (got %q)", out)
 	}
 
-	// APM directory should be gone
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Error("APM directory should be removed after nuke")
+	// Profiles and generated dirs should be gone
+	if _, err := os.Stat(filepath.Join(dir, "profiles")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("profiles directory should be removed after nuke")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("generated directory should be removed after nuke")
+	}
+
+	// Common directory should still exist
+	if _, err := os.Stat(filepath.Join(dir, "common")); err != nil {
+		t.Error("common directory should be preserved after nuke")
+	}
+
+	// APM directory should still exist
+	if _, err := os.Stat(dir); err != nil {
+		t.Error("APM directory should still exist after nuke")
 	}
 }
 
@@ -1134,8 +1147,17 @@ func TestNukeNoProfiles(t *testing.T) {
 		t.Fatalf("nuke failed: %v", err)
 	}
 
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Error("APM directory should be removed after nuke")
+	// Profiles and generated dirs should be gone
+	if _, err := os.Stat(filepath.Join(dir, "profiles")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("profiles directory should be removed after nuke")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("generated directory should be removed after nuke")
+	}
+
+	// Common should be preserved
+	if _, err := os.Stat(filepath.Join(dir, "common")); err != nil {
+		t.Error("common directory should be preserved after nuke")
 	}
 }
 
@@ -1172,8 +1194,14 @@ func TestNukeForceSkipsConfirmation(t *testing.T) {
 		t.Fatalf("nuke --force failed: %v", err)
 	}
 
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Error("APM directory should be removed")
+	// Profiles should be gone
+	if _, err := os.Stat(filepath.Join(dir, "profiles")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("profiles directory should be removed")
+	}
+
+	// Common should be preserved
+	if _, err := os.Stat(filepath.Join(dir, "common")); err != nil {
+		t.Error("common directory should be preserved")
 	}
 }
 
@@ -1198,8 +1226,14 @@ func TestNukeWithActiveProfile(t *testing.T) {
 		t.Fatalf("nuke failed: %v", err)
 	}
 
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Error("APM directory should be removed after nuke")
+	// Profiles should be gone
+	if _, err := os.Stat(filepath.Join(dir, "profiles")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("profiles directory should be removed after nuke")
+	}
+
+	// Common should be preserved
+	if _, err := os.Stat(filepath.Join(dir, "common")); err != nil {
+		t.Error("common directory should be preserved after nuke")
 	}
 }
 

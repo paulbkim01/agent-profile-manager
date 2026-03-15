@@ -194,14 +194,19 @@ func activateProfile(cfg *Config, name string, skipSymlink bool) error {
 		logSuccess("Backed up ~/.claude (restore with: apm use --unset)")
 	}
 
-	// Regenerate profile (cfg.ClaudeDir now points to backup or user override)
-	if err := generateProfile(cfg, name); err != nil {
-		return fmt.Errorf("generating profile: %w", err)
-	}
-
 	genDir := cfg.GeneratedProfileDir(name)
 
-	// Remove old symlink if switching profiles (after successful generation)
+	// Only regenerate if the generated dir doesn't exist yet.
+	// Explicit regeneration is handled by `apm regen`, `apm edit`, and `apm create`.
+	if _, statErr := os.Stat(genDir); errors.Is(statErr, os.ErrNotExist) {
+		if err := generateProfile(cfg, name); err != nil {
+			return fmt.Errorf("generating profile: %w", err)
+		}
+	} else {
+		log.Printf("activate: using existing generated dir %s", genDir)
+	}
+
+	// Remove old symlink if switching profiles
 	if lstatErr == nil && isSymlink(fi) {
 		if err := os.Remove(claudePath); err != nil {
 			return fmt.Errorf("removing symlink %s: %w", claudePath, err)
@@ -343,10 +348,11 @@ func backupClaude(cfg *Config) error {
 	return cfg.writeConfigFile(cf)
 }
 
-// nukeAPM completely removes all APM state while preserving the current
-// ~/.claude and ~/.claude.json content. Unlike deactivateProfile (which
-// restores a stale backup), nuke flattens the active generated dir into a
-// real ~/.claude so that auth tokens, skills, and plugins survive.
+// nukeAPM removes all profiles and generated data while preserving the
+// common directory and current ~/.claude and ~/.claude.json content.
+// Unlike deactivateProfile (which restores a stale backup), nuke flattens
+// the active generated dir into a real ~/.claude so that auth tokens,
+// skills, and plugins survive.
 func nukeAPM(cfg *Config) error {
 	claudePath, err := defaultClaudeDir()
 	if err != nil {
@@ -404,16 +410,33 @@ func nukeAPM(cfg *Config) error {
 		}
 	}
 
-	// Unlink all symlinks in APM dir before removal, so RemoveAll
-	// cannot follow symlinks into external directories.
-	if err := unlinkAll(cfg.APMDir); err != nil {
-		return fmt.Errorf("unlinking symlinks in %s: %w", cfg.APMDir, err)
+	// Unlink all symlinks in generated and profiles dirs before removal,
+	// so RemoveAll cannot follow symlinks into external directories.
+	for _, dir := range []string{cfg.GeneratedDir, cfg.ProfilesDir} {
+		if err := unlinkAll(dir); err != nil {
+			return fmt.Errorf("unlinking symlinks in %s: %w", dir, err)
+		}
 	}
 
-	// Remove entire APM directory
-	log.Printf("nuke: removing %s", cfg.APMDir)
-	if err := os.RemoveAll(cfg.APMDir); err != nil {
-		return fmt.Errorf("removing %s: %w", cfg.APMDir, err)
+	// Remove generated and profiles directories, but keep common
+	for _, dir := range []string{cfg.GeneratedDir, cfg.ProfilesDir} {
+		log.Printf("nuke: removing %s", dir)
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("removing %s: %w", dir, err)
+		}
+	}
+
+	// Remove backup directories
+	os.RemoveAll(cfg.BackupDir())
+	os.RemoveAll(cfg.BackupExternalDir())
+
+	// Clear profile-related config entries
+	cf, cfErr := cfg.readConfigFile()
+	if cfErr == nil {
+		cf.ActiveProfile = ""
+		cf.DefaultProfile = ""
+		cf.ClaudeHomePath = ""
+		_ = cfg.writeConfigFile(cf)
 	}
 
 	return nil

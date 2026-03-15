@@ -744,9 +744,22 @@ func TestNukePreservesCurrentState(t *testing.T) {
 		t.Error(".apm-meta.json should be removed after nuke")
 	}
 
-	// APM directory should be gone
-	if _, err := os.Stat(cfg.APMDir); !errors.Is(err, os.ErrNotExist) {
-		t.Error("APM directory should be removed after nuke")
+	// Profiles and generated dirs should be gone
+	if _, err := os.Stat(cfg.ProfilesDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("profiles directory should be removed after nuke")
+	}
+	if _, err := os.Stat(cfg.GeneratedDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("generated directory should be removed after nuke")
+	}
+
+	// Common directory should still exist
+	if _, err := os.Stat(cfg.CommonDir); err != nil {
+		t.Error("common directory should be preserved after nuke")
+	}
+
+	// APM directory should still exist
+	if _, err := os.Stat(cfg.APMDir); err != nil {
+		t.Error("APM directory should still exist after nuke")
 	}
 }
 
@@ -874,8 +887,16 @@ func TestNukeNoActiveProfile(t *testing.T) {
 		t.Errorf("original content wrong: got %q", string(data))
 	}
 
-	// APM directory should be gone
-	if _, err := os.Stat(cfg.APMDir); !errors.Is(err, os.ErrNotExist) {
-		t.Error("APM directory should be removed after nuke")
+	// Profiles and generated dirs should be gone
+	if _, err := os.Stat(cfg.ProfilesDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("profiles directory should be removed after nuke")
+	}
+	if _, err := os.Stat(cfg.GeneratedDir); !errors.Is(err, os.ErrNotExist) {
+		t.Error("generated directory should be removed after nuke")
+	}
+
+	// Common directory should still exist
+	if _, err := os.Stat(cfg.CommonDir); err != nil {
+		t.Error("common directory should be preserved after nuke")
 	}
 }
