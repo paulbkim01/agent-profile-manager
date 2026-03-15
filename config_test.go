@@ -1,4 +1,4 @@
-package config
+package main
 
 import (
 	"os"
@@ -6,24 +6,16 @@ import (
 	"testing"
 )
 
-func testConfig(t *testing.T) *Config {
+func testConfigSetup(t *testing.T) *Config {
 	t.Helper()
-	dir := t.TempDir()
-	return &Config{
-		APMDir:       dir,
-		ClaudeDir:    filepath.Join(dir, ".claude"),
-		CommonDir:    filepath.Join(dir, "common"),
-		ProfilesDir:  filepath.Join(dir, "profiles"),
-		GeneratedDir: filepath.Join(dir, "generated"),
-		ConfigPath:   filepath.Join(dir, "config.yaml"),
-	}
+	return newTestConfig(t)
 }
 
 func TestLoadWithOverride(t *testing.T) {
 	dir := t.TempDir()
-	cfg, err := Load(dir)
+	cfg, err := loadConfig(dir)
 	if err != nil {
-		t.Fatalf("Load failed: %v", err)
+		t.Fatalf("loadConfig failed: %v", err)
 	}
 	if cfg.APMDir != dir {
 		t.Errorf("expected APMDir=%s, got %s", dir, cfg.APMDir)
@@ -31,7 +23,7 @@ func TestLoadWithOverride(t *testing.T) {
 }
 
 func TestDefaultProfileEmpty(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 
 	name, err := cfg.DefaultProfile()
 	if err != nil {
@@ -43,7 +35,7 @@ func TestDefaultProfileEmpty(t *testing.T) {
 }
 
 func TestSetAndGetDefaultProfile(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 
 	if err := cfg.SetDefaultProfile("work"); err != nil {
 		t.Fatalf("SetDefaultProfile failed: %v", err)
@@ -59,7 +51,7 @@ func TestSetAndGetDefaultProfile(t *testing.T) {
 }
 
 func TestClearDefaultProfile(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 
 	if err := cfg.SetDefaultProfile("work"); err != nil {
 		t.Fatalf("SetDefaultProfile failed: %v", err)
@@ -78,7 +70,7 @@ func TestClearDefaultProfile(t *testing.T) {
 }
 
 func TestEnsureDirs(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs failed: %v", err)
@@ -98,7 +90,7 @@ func TestEnsureDirs(t *testing.T) {
 }
 
 func TestEnsureDirsIdempotent(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("first EnsureDirs failed: %v", err)
@@ -109,7 +101,7 @@ func TestEnsureDirsIdempotent(t *testing.T) {
 }
 
 func TestProfileDir(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 	got := cfg.ProfileDir("work")
 	want := filepath.Join(cfg.ProfilesDir, "work")
 	if got != want {
@@ -118,7 +110,7 @@ func TestProfileDir(t *testing.T) {
 }
 
 func TestGeneratedProfileDir(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := testConfigSetup(t)
 	got := cfg.GeneratedProfileDir("work")
 	want := filepath.Join(cfg.GeneratedDir, "work")
 	if got != want {
@@ -133,7 +125,7 @@ func TestLoadMalformedYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Load(dir)
+	_, err := loadConfig(dir)
 	if err == nil {
 		t.Fatal("expected error for malformed YAML")
 	}
@@ -146,9 +138,9 @@ func TestLoadWithClaudeDirOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := Load(dir)
+	cfg, err := loadConfig(dir)
 	if err != nil {
-		t.Fatalf("Load failed: %v", err)
+		t.Fatalf("loadConfig failed: %v", err)
 	}
 	if cfg.ClaudeDir != "/tmp/custom-claude" {
 		t.Errorf("expected ClaudeDir=/tmp/custom-claude, got %s", cfg.ClaudeDir)

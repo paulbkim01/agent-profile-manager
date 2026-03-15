@@ -1,4 +1,4 @@
-package merge
+package main
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ func TestScalarOverride(t *testing.T) {
 	profile := map[string]any{
 		"model": "us.anthropic.claude-opus-4-6-v1[1m]",
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	if result["model"] != "us.anthropic.claude-opus-4-6-v1[1m]" {
 		t.Errorf("expected profile model, got %v", result["model"])
@@ -37,7 +37,7 @@ func TestNestedObjectMerge(t *testing.T) {
 			"command": "bash ~/.claude/statusline-work.sh",
 		},
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	sl := result["statusLine"].(map[string]any)
 	if sl["type"] != "command" {
@@ -55,7 +55,7 @@ func TestArrayReplace(t *testing.T) {
 	profile := map[string]any{
 		"someList": []any{"x", "y"},
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	arr := result["someList"].([]any)
 	if len(arr) != 2 || arr[0] != "x" || arr[1] != "y" {
@@ -74,7 +74,7 @@ func TestPermissionsAllowUnion(t *testing.T) {
 			"allow": []any{"Edit", "Grep", "WebFetch"},
 		},
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	perms := result["permissions"].(map[string]any)
 	allow := perms["allow"].([]any)
@@ -107,7 +107,7 @@ func TestEnabledPluginsObjectMerge(t *testing.T) {
 			"plugin-c@marketplace": true,
 		},
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	plugins := result["enabledPlugins"].(map[string]any)
 	if plugins["plugin-a@marketplace"] != true {
@@ -130,7 +130,7 @@ func TestNullSentinelDeletion(t *testing.T) {
 	profile := map[string]any{
 		"voiceEnabled": nil, // delete this
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	if _, exists := result["voiceEnabled"]; exists {
 		t.Error("expected voiceEnabled to be deleted by null sentinel")
@@ -156,7 +156,7 @@ func TestNestedNullSentinel(t *testing.T) {
 			"AWS_PROFILE": nil, // delete just this key
 		},
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	env := result["env"].(map[string]any)
 	if _, exists := env["AWS_PROFILE"]; exists {
@@ -175,7 +175,7 @@ func TestEmptyCommon(t *testing.T) {
 	profile := map[string]any{
 		"model": "opus",
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 	if result["model"] != "opus" {
 		t.Errorf("expected profile value, got %v", result["model"])
 	}
@@ -186,14 +186,14 @@ func TestEmptyProfile(t *testing.T) {
 		"model": "sonnet",
 	}
 	profile := map[string]any{}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 	if result["model"] != "sonnet" {
 		t.Errorf("expected common value, got %v", result["model"])
 	}
 }
 
 func TestBothEmpty(t *testing.T) {
-	result := Settings(map[string]any{}, map[string]any{})
+	result := mergeSettings(map[string]any{}, map[string]any{})
 	if len(result) != 0 {
 		t.Errorf("expected empty result, got %v", result)
 	}
@@ -227,7 +227,7 @@ func TestFullRealisticMerge(t *testing.T) {
 		},
 	}
 
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	// Model should be profile's
 	if result["model"] != "us.anthropic.claude-opus-4-6-v1[1m]" {
@@ -275,7 +275,7 @@ func TestFullRealisticMerge(t *testing.T) {
 }
 
 func TestLoadJSON_FileNotExist(t *testing.T) {
-	result, err := LoadJSON(filepath.Join(t.TempDir(), "nonexistent.json"))
+	result, err := loadJSON(filepath.Join(t.TempDir(), "nonexistent.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestLoadJSON_ValidFile(t *testing.T) {
 		t.Fatalf("writing test file: %v", err)
 	}
 
-	result, err := LoadJSON(path)
+	result, err := loadJSON(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestLoadJSON_InvalidJSON(t *testing.T) {
 		t.Fatalf("writing test file: %v", err)
 	}
 
-	_, err := LoadJSON(path)
+	_, err := loadJSON(path)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -328,19 +328,19 @@ func TestWriteJSON_RoundTrip(t *testing.T) {
 			"key": "val",
 		},
 	}
-	if err := WriteJSON(path, data); err != nil {
-		t.Fatalf("WriteJSON failed: %v", err)
+	if err := writeJSON(path, data); err != nil {
+		t.Fatalf("writeJSON failed: %v", err)
 	}
 
 	// Verify temp file is cleaned up (renamed away)
 	if _, err := os.Stat(path + ".tmp"); err == nil {
-		t.Error("temp file should not exist after WriteJSON")
+		t.Error("temp file should not exist after writeJSON")
 	}
 
 	// Read back and verify
-	result, err := LoadJSON(path)
+	result, err := loadJSON(path)
 	if err != nil {
-		t.Fatalf("LoadJSON failed: %v", err)
+		t.Fatalf("loadJSON failed: %v", err)
 	}
 	if result["model"] != "opus" {
 		t.Errorf("expected model=opus, got %v", result["model"])
@@ -361,9 +361,9 @@ func TestWriteJSON_RoundTrip(t *testing.T) {
 }
 
 func TestNilInputs(t *testing.T) {
-	// Settings should handle nil maps gracefully
-	// by treating them as empty maps via the make in Settings
-	result := Settings(nil, nil)
+	// mergeSettings should handle nil maps gracefully
+	// by treating them as empty maps via the make in mergeSettings
+	result := mergeSettings(nil, nil)
 	if len(result) != 0 {
 		t.Errorf("expected empty result for nil inputs, got %v", result)
 	}
@@ -397,7 +397,7 @@ func TestDeepMergeDoesNotMutateInputs(t *testing.T) {
 	commonStatusFormat := common["statusLine"].(map[string]any)["format"]
 	commonEnvFoo := common["env"].(map[string]any)["FOO"]
 
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	// Verify result is correct (profile overrides)
 	statusLine := result["statusLine"].(map[string]any)
@@ -410,21 +410,21 @@ func TestDeepMergeDoesNotMutateInputs(t *testing.T) {
 
 	// Verify common was NOT mutated
 	if common["model"] != "sonnet" {
-		t.Error("Settings mutated common['model']")
+		t.Error("mergeSettings mutated common['model']")
 	}
 	if common["statusLine"].(map[string]any)["enabled"] != commonStatusEnabled {
-		t.Errorf("Settings mutated common['statusLine']['enabled']: was %v, now %v",
+		t.Errorf("mergeSettings mutated common['statusLine']['enabled']: was %v, now %v",
 			commonStatusEnabled, common["statusLine"].(map[string]any)["enabled"])
 	}
 	if common["statusLine"].(map[string]any)["format"] != commonStatusFormat {
-		t.Error("Settings mutated common['statusLine']['format']")
+		t.Error("mergeSettings mutated common['statusLine']['format']")
 	}
 	if common["env"].(map[string]any)["FOO"] != commonEnvFoo {
-		t.Error("Settings mutated common['env']['FOO']")
+		t.Error("mergeSettings mutated common['env']['FOO']")
 	}
 	// common's env should NOT have profile's BAZ key
 	if _, hasBaz := common["env"].(map[string]any)["BAZ"]; hasBaz {
-		t.Error("Settings leaked profile key 'BAZ' into common['env']")
+		t.Error("mergeSettings leaked profile key 'BAZ' into common['env']")
 	}
 }
 
@@ -439,7 +439,7 @@ func TestPermissionsAllowUnionPreservesOrder(t *testing.T) {
 			"allow": []any{"Grep", "Read"},
 		},
 	}
-	result := Settings(common, profile)
+	result := mergeSettings(common, profile)
 
 	perms := result["permissions"].(map[string]any)
 	allow := perms["allow"].([]any)

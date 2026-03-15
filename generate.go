@@ -1,4 +1,4 @@
-package generate
+package main
 
 import (
 	"crypto/sha256"
@@ -8,26 +8,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-
-	"github.com/paulbkim/agent-profile-manager/internal"
-	"github.com/paulbkim/agent-profile-manager/internal/config"
-	"github.com/paulbkim/agent-profile-manager/internal/merge"
-	"github.com/paulbkim/agent-profile-manager/internal/validate"
 )
 
-// skipExtensions are backup/temp file extensions that should not be symlinked
-// into generated directories.
-var skipExtensions = map[string]bool{
-	".work":   true,
-	".backup": true,
-	".bak":    true,
-	".orig":   true,
-	".tmp":    true,
-}
-
-// Profile builds the generated directory for a profile.
+// generateProfile builds the generated directory for a profile.
 // Cleans and rebuilds from scratch each time.
-func Profile(cfg *config.Config, name string) error {
+func generateProfile(cfg *Config, name string) error {
 	genDir := cfg.GeneratedProfileDir(name)
 	profileDir := cfg.ProfileDir(name)
 
@@ -52,28 +37,28 @@ func Profile(cfg *config.Config, name string) error {
 	// Step 1: Validate settings files before merging
 	commonSettingsPath := filepath.Join(cfg.CommonDir, "settings.json")
 	profileSettingsPath := filepath.Join(profileDir, "settings.json")
-	if err := validate.SettingsJSON(commonSettingsPath); err != nil {
+	if err := validateSettingsJSON(commonSettingsPath); err != nil {
 		return fmt.Errorf("common settings: %w", err)
 	}
-	if err := validate.SettingsJSON(profileSettingsPath); err != nil {
+	if err := validateSettingsJSON(profileSettingsPath); err != nil {
 		return fmt.Errorf("profile settings: %w", err)
 	}
 
 	// Step 2: Deep merge settings.json
-	if err := mergeSettings(cfg, profileDir, genDir); err != nil {
+	if err := mergeProfileSettings(cfg, profileDir, genDir); err != nil {
 		return fmt.Errorf("merging settings: %w", err)
 	}
 
 	// Step 3: Merge managed directories (skills/, commands/, agents/)
-	for _, dir := range internal.ManagedDirs {
+	for _, dir := range managedDirs {
 		if err := mergeDir(cfg, profileDir, genDir, dir); err != nil {
 			return fmt.Errorf("merging %s: %w", dir, err)
 		}
 	}
 
-	// Step 4: Symlink everything else from ~/.claude/
-	if err := symlinkShared(cfg, genDir); err != nil {
-		return fmt.Errorf("symlinking shared: %w", err)
+	// Step 4: Symlink extra files from common + profile (profile wins)
+	if err := symlinkExtras(cfg.CommonDir, profileDir, genDir); err != nil {
+		return fmt.Errorf("symlinking extras: %w", err)
 	}
 
 	// Step 5: Write meta hash for staleness detection
@@ -84,26 +69,26 @@ func Profile(cfg *config.Config, name string) error {
 	return nil
 }
 
-// mergeSettings deep-merges common/settings.json + profile/settings.json.
-func mergeSettings(cfg *config.Config, profileDir, genDir string) error {
-	commonSettings, err := merge.LoadJSON(filepath.Join(cfg.CommonDir, "settings.json"))
+// mergeProfileSettings deep-merges common/settings.json + profile/settings.json.
+func mergeProfileSettings(cfg *Config, profileDir, genDir string) error {
+	commonSettings, err := loadJSON(filepath.Join(cfg.CommonDir, "settings.json"))
 	if err != nil {
 		return err
 	}
-	profileSettings, err := merge.LoadJSON(filepath.Join(profileDir, "settings.json"))
+	profileSettings, err := loadJSON(filepath.Join(profileDir, "settings.json"))
 	if err != nil {
 		return err
 	}
 
-	merged := merge.Settings(commonSettings, profileSettings)
+	merged := mergeSettings(commonSettings, profileSettings)
 	log.Printf("generate: merged settings (%d common keys + %d profile keys)", len(commonSettings), len(profileSettings))
 
-	return merge.WriteJSON(filepath.Join(genDir, "settings.json"), merged)
+	return writeJSON(filepath.Join(genDir, "settings.json"), merged)
 }
 
 // mergeDir creates a directory with symlinks from both common and profile sources.
 // Profile entries override common entries with the same name.
-func mergeDir(cfg *config.Config, profileDir, genDir, dirName string) error {
+func mergeDir(cfg *Config, profileDir, genDir, dirName string) error {
 	targetDir := filepath.Join(genDir, dirName)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("creating target dir %s: %w", targetDir, err)
@@ -162,37 +147,55 @@ func symlinkEntries(srcDir, targetDir, dirName, label string, linked map[string]
 	return nil
 }
 
-// symlinkShared creates symlinks for everything in ~/.claude/ that isn't
-// in ManagedItems (those are handled by mergeSettings/mergeDir).
-func symlinkShared(cfg *config.Config, genDir string) error {
-	managed := make(map[string]bool)
-	for _, item := range internal.ManagedItems {
-		managed[item] = true
+// symlinkExtras links any files/dirs from common and profile that aren't
+// already handled by settings.json merge or managed dir merge.
+// Profile entries override common entries with the same name.
+// Nothing is linked from the backup — generated = common + profile only.
+func symlinkExtras(commonDir, profileDir, genDir string) error {
+	linked := make(map[string]bool)
+
+	// Profile extras first (they win on conflict)
+	if err := linkExtrasFrom(profileDir, genDir, "profile", linked); err != nil {
+		return err
 	}
 
-	entries, err := os.ReadDir(cfg.ClaudeDir)
+	// Common extras (skip if profile already provided)
+	if err := linkExtrasFrom(commonDir, genDir, "common", linked); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// linkExtrasFrom symlinks files/dirs from srcDir into genDir, skipping
+// managed items and anything already present in genDir.
+func linkExtrasFrom(srcDir, genDir, label string, linked map[string]bool) error {
+	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			log.Printf("generate: %s not found, skipping shared symlinks", cfg.ClaudeDir)
 			return nil
 		}
-		return fmt.Errorf("reading claude dir %s: %w", cfg.ClaudeDir, err)
+		return fmt.Errorf("reading %s dir: %w", label, err)
 	}
 
 	for _, e := range entries {
 		name := e.Name()
 
-		// Skip managed items (we handle those separately)
-		if managed[name] {
+		// Skip managed items (already handled)
+		if managedItemSet[name] {
 			continue
 		}
 
-		// Skip backup/temp files
-		if skipExtensions[filepath.Ext(name)] {
+		// Skip profile metadata
+		if name == "profile.yaml" {
 			continue
 		}
 
-		src := filepath.Join(cfg.ClaudeDir, name)
+		// Skip if already linked by a higher-priority source
+		if linked[name] {
+			continue
+		}
+
 		dst := filepath.Join(genDir, name)
 
 		// Skip if already exists in generated dir
@@ -200,10 +203,17 @@ func symlinkShared(cfg *config.Config, genDir string) error {
 			continue
 		}
 
-		if err := os.Symlink(src, dst); err != nil {
-			return fmt.Errorf("symlink %s -> %s: %w", dst, src, err)
+		src := filepath.Join(srcDir, name)
+		realSrc, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			realSrc = src
 		}
-		log.Printf("generate: link %s -> shared", name)
+
+		if err := os.Symlink(realSrc, dst); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", dst, realSrc, err)
+		}
+		log.Printf("generate: link %s -> %s", name, label)
+		linked[name] = true
 	}
 
 	return nil

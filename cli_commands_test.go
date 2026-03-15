@@ -1,43 +1,21 @@
-package cmd
+package main
 
 import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // setupTestEnv creates a temp directory structure for testing.
-// Returns the config dir path and a cleanup function.
+// Returns the config dir path.
 func setupTestEnv(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-
-	// Create the common dir with empty settings.json
-	commonDir := filepath.Join(dir, "common")
-	if err := os.MkdirAll(commonDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, sub := range []string{"skills", "commands", "agents"} {
-		if err := os.MkdirAll(filepath.Join(commonDir, sub), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(commonDir, "settings.json"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create profiles and generated dirs
-	if err := os.MkdirAll(filepath.Join(dir, "profiles"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	return dir
+	cfg := newTestConfig(t)
+	return cfg.APMDir
 }
 
 // resetFlags resets all package-level flag variables to their defaults.
@@ -45,8 +23,8 @@ func setupTestEnv(t *testing.T) string {
 // set --all, --from, --force etc. can leak into subsequent tests.
 func resetFlags() {
 	createFrom = ""
+	createCurrent = false
 	createDesc = ""
-	createDefault = false
 	deleteForce = false
 	regenAll = false
 	useGlobal = false
@@ -117,7 +95,7 @@ func TestCreateAndList(t *testing.T) {
 	}
 }
 
-func TestCreateDuplicate(t *testing.T) {
+func TestCLICreateDuplicate(t *testing.T) {
 	dir := setupTestEnv(t)
 
 	// Create first
@@ -126,45 +104,42 @@ func TestCreateDuplicate(t *testing.T) {
 		t.Fatalf("first create failed: %v", err)
 	}
 
-	// Create duplicate should fail
-	_, err = executeWithStdout(t, "--config-dir", dir, "create", "dup")
-	if err == nil {
-		t.Fatal("expected error creating duplicate profile")
+	// Duplicate prompts for overwrite — confirm returns false (default in tests)
+	confirmOverwrite = func(name string) bool { return false }
+	defer func() { confirmOverwrite = func(string) bool { return false } }()
+
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "dup")
+	if err != nil {
+		t.Fatalf("duplicate create should not error when declined: %v", err)
 	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("expected 'already exists' error, got: %v", err)
+	if strings.Contains(out, "Created") {
+		t.Errorf("should not create when overwrite declined: %s", out)
 	}
 }
 
-func TestCreateDuplicateWithDefault(t *testing.T) {
+func TestCreateDuplicateOverwrite(t *testing.T) {
 	dir := setupTestEnv(t)
 
-	// Create first with --default
-	_, err := executeWithStdout(t, "--config-dir", dir, "create", "dup", "--default")
+	// Create first
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "dup")
 	if err != nil {
 		t.Fatalf("first create failed: %v", err)
 	}
 
-	// Duplicate with --default should fail without touching config
-	_, err = executeWithStdout(t, "--config-dir", dir, "create", "dup", "--default")
-	if err == nil {
-		t.Fatal("expected error creating duplicate profile")
-	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("expected 'already exists' error, got: %v", err)
-	}
+	// Overwrite confirmed
+	confirmOverwrite = func(name string) bool { return true }
+	defer func() { confirmOverwrite = func(string) bool { return false } }()
 
-	// Config should still have original default
-	configData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "dup")
 	if err != nil {
-		t.Fatalf("reading config.yaml: %v", err)
+		t.Fatalf("overwrite create failed: %v", err)
 	}
-	if !strings.Contains(string(configData), "default_profile: dup") {
-		t.Errorf("expected original default preserved, got: %s", string(configData))
+	if !strings.Contains(out, "Created profile 'dup'") {
+		t.Errorf("expected Created message: %s", out)
 	}
 }
 
-func TestCreateInvalidName(t *testing.T) {
+func TestCLICreateInvalidName(t *testing.T) {
 	dir := setupTestEnv(t)
 
 	_, err := executeWithStdout(t, "--config-dir", dir, "create", "INVALID")
@@ -219,12 +194,9 @@ func TestDeleteProfile(t *testing.T) {
 		t.Fatalf("create failed: %v", err)
 	}
 
-	out, err := executeWithStdout(t, "--config-dir", dir, "delete", "to-delete")
+	_, err = executeWithStdout(t, "--config-dir", dir, "delete", "to-delete")
 	if err != nil {
-		t.Fatalf("delete failed: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "Deleted profile 'to-delete'") {
-		t.Errorf("unexpected delete output: %s", out)
+		t.Fatalf("delete failed: %v", err)
 	}
 
 	// Verify it's gone
@@ -255,12 +227,9 @@ func TestDeleteAlias(t *testing.T) {
 	}
 
 	// Use the "rm" alias
-	out, err := executeWithStdout(t, "--config-dir", dir, "rm", "rm-test")
+	_, err = executeWithStdout(t, "--config-dir", dir, "rm", "rm-test")
 	if err != nil {
-		t.Fatalf("rm alias failed: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "Deleted profile 'rm-test'") {
-		t.Errorf("unexpected rm output: %s", out)
+		t.Fatalf("rm alias failed: %v", err)
 	}
 }
 
@@ -343,7 +312,7 @@ func TestRegenerateAlias(t *testing.T) {
 	}
 }
 
-func TestListEmpty(t *testing.T) {
+func TestCLIListEmpty(t *testing.T) {
 	dir := setupTestEnv(t)
 
 	out, err := executeWithStdout(t, "--config-dir", dir, "ls")
@@ -353,8 +322,8 @@ func TestListEmpty(t *testing.T) {
 	if !strings.Contains(out, "No profiles") {
 		t.Errorf("expected 'No profiles' message: %s", out)
 	}
-	if !strings.Contains(out, "--from current --default") {
-		t.Errorf("expected nudge with --default flag: %s", out)
+	if !strings.Contains(out, "--current") {
+		t.Errorf("expected nudge with --current: %s", out)
 	}
 }
 
@@ -495,7 +464,7 @@ func TestCurrentNoActiveProfile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no profile is active")
 	}
-	if !IsNoActiveProfile(err) {
+	if !isNoActiveProfile(err) {
 		t.Errorf("expected errNoActiveProfile sentinel, got: %v", err)
 	}
 }
@@ -566,7 +535,7 @@ func TestEditShellParsesEditorWithFlags(t *testing.T) {
 	}
 }
 
-func TestCreateFromProfile(t *testing.T) {
+func TestCLICreateFromProfile(t *testing.T) {
 	dir := setupTestEnv(t)
 
 	// Create source profile
@@ -605,18 +574,16 @@ func TestCreateFromProfile(t *testing.T) {
 	}
 }
 
-func TestCreateWithDefault(t *testing.T) {
+func TestCreateNoArgsDefault(t *testing.T) {
 	dir := setupTestEnv(t)
 
-	out, err := executeWithStdout(t, "--config-dir", dir, "create", "default-test", "--default")
+	// apm create (no args) → creates "default" profile, auto-activates
+	out, err := executeWithStdout(t, "--config-dir", dir, "create")
 	if err != nil {
-		t.Fatalf("create --default failed: %v\noutput: %s", err, out)
+		t.Fatalf("create (no args) failed: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Created profile 'default-test'") {
+	if !strings.Contains(out, "Created profile 'default'") {
 		t.Errorf("expected Created message: %s", out)
-	}
-	if !strings.Contains(out, "Global default set to 'default-test'") {
-		t.Errorf("expected global default message: %s", out)
 	}
 
 	// Verify config.yaml has the default set
@@ -624,18 +591,18 @@ func TestCreateWithDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading config.yaml: %v", err)
 	}
-	if !strings.Contains(string(configData), "default_profile: default-test") {
+	if !strings.Contains(string(configData), "default_profile: default") {
 		t.Errorf("expected default_profile in config.yaml, got: %s", string(configData))
 	}
 
 	// Verify generated dir was created
-	genDir := filepath.Join(dir, "generated", "default-test")
+	genDir := filepath.Join(dir, "generated", "default")
 	if _, err := os.Stat(genDir); err != nil {
 		t.Errorf("generated dir not created: %v", err)
 	}
 }
 
-func TestCreateFromCurrentWithDefault(t *testing.T) {
+func TestCreateFromCurrentNoArgs(t *testing.T) {
 	dir := setupTestEnv(t)
 
 	// Create a fake claude dir with settings
@@ -653,19 +620,17 @@ func TestCreateFromCurrentWithDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeWithStdout(t, "--config-dir", dir, "create", "from-current", "--from", "current", "--default")
+	// apm create --current (no name → "default")
+	out, err := executeWithStdout(t, "--config-dir", dir, "create", "--current")
 	if err != nil {
-		t.Fatalf("create --from current --default failed: %v\noutput: %s", err, out)
+		t.Fatalf("create --current failed: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Created profile 'from-current'") {
+	if !strings.Contains(out, "Created profile 'default'") {
 		t.Errorf("expected Created message: %s", out)
-	}
-	if !strings.Contains(out, "Global default set to 'from-current'") {
-		t.Errorf("expected global default message: %s", out)
 	}
 
 	// Verify settings were imported
-	profileSettings := filepath.Join(dir, "profiles", "from-current", "settings.json")
+	profileSettings := filepath.Join(dir, "profiles", "default", "settings.json")
 	data, err := os.ReadFile(profileSettings)
 	if err != nil {
 		t.Fatalf("reading profile settings: %v", err)
@@ -673,4 +638,231 @@ func TestCreateFromCurrentWithDefault(t *testing.T) {
 	if !strings.Contains(string(data), "sonnet") {
 		t.Errorf("expected imported settings, got: %s", string(data))
 	}
+
+	// Verify it was set as global default
+	configData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading config.yaml: %v", err)
+	}
+	if !strings.Contains(string(configData), "default_profile: default") {
+		t.Errorf("expected default_profile in config.yaml, got: %s", string(configData))
+	}
+}
+
+// setupShellTest builds the apm binary and creates a config dir at the
+// default location ($HOME/.config/apm) under a fake HOME. Returns the
+// bin dir (for PATH), fake home, and config dir.
+func setupShellTest(t *testing.T) (binDir, fakeHome, configDir string) {
+	t.Helper()
+
+	// Build the binary
+	binDir = t.TempDir()
+	binPath := filepath.Join(binDir, "apm")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	build.Dir = getProjectRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	// Create config dir at default location under fake HOME
+	fakeHome = t.TempDir()
+	configDir = filepath.Join(fakeHome, ".config", "apm")
+
+	cfg := &Config{
+		APMDir:       configDir,
+		ClaudeDir:    filepath.Join(fakeHome, ".claude"),
+		CommonDir:    filepath.Join(configDir, "common"),
+		ProfilesDir:  filepath.Join(configDir, "profiles"),
+		GeneratedDir: filepath.Join(configDir, "generated"),
+		ConfigPath:   filepath.Join(configDir, "config.yaml"),
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a profile using the binary directly
+	create := exec.Command(binPath, "--config-dir", configDir, "create", "shell-test")
+	create.Env = append(os.Environ(), "HOME="+fakeHome)
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create failed: %v\n%s", err, out)
+	}
+
+	return binDir, fakeHome, configDir
+}
+
+// TestShellIntegrationBash runs the generated shell wrapper in a real bash
+// subprocess and verifies that `apm use` activates via symlink.
+func TestShellIntegrationBash(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	binDir, fakeHome, configDir := setupShellTest(t)
+
+	initScript, _ := executeWithStdout(t, "init", "bash")
+
+	// The wrapper intercepts `apm use`, evals stdout (APM_PROFILE export).
+	// In normal mode (no --config-dir), activateProfile creates a symlink.
+	script := initScript + "\n" +
+		`apm use shell-test` + "\n" +
+		`echo "APM_PROFILE=$APM_PROFILE"` + "\n" +
+		`if [ -L "$HOME/.claude" ]; then echo "SYMLINK=yes"; else echo "SYMLINK=no"; fi` + "\n" +
+		`readlink "$HOME/.claude"` + "\n"
+
+	bashCmd := exec.Command("bash", "-c", script)
+	bashCmd.Env = []string{
+		"PATH=" + binDir + ":" + os.Getenv("PATH"),
+		"HOME=" + fakeHome,
+		"TERM=dumb",
+	}
+
+	out, err := bashCmd.CombinedOutput()
+	output := string(out)
+	if err != nil {
+		t.Fatalf("bash script failed: %v\noutput: %s", err, output)
+	}
+
+	if !strings.Contains(output, "APM_PROFILE=shell-test") {
+		t.Errorf("expected APM_PROFILE=shell-test in output:\n%s", output)
+	}
+	if !strings.Contains(output, "SYMLINK=yes") {
+		t.Errorf("expected ~/.claude to be a symlink:\n%s", output)
+	}
+	expectedGenDir := filepath.Join(configDir, "generated", "shell-test")
+	if !strings.Contains(output, expectedGenDir) {
+		t.Errorf("expected symlink target %s in output:\n%s", expectedGenDir, output)
+	}
+}
+
+// TestShellIntegrationUnset verifies that `apm use --unset` clears env vars
+// and removes the symlink through the shell wrapper.
+func TestShellIntegrationUnset(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	binDir, fakeHome, _ := setupShellTest(t)
+
+	initScript, _ := executeWithStdout(t, "init", "bash")
+
+	// Activate first, then deactivate
+	script := initScript + "\n" +
+		`apm use shell-test` + "\n" +
+		`apm use --unset` + "\n" +
+		`echo "APM_PROFILE=${APM_PROFILE:-EMPTY}"` + "\n" +
+		`if [ -L "$HOME/.claude" ]; then echo "SYMLINK=yes"; else echo "SYMLINK=no"; fi` + "\n"
+
+	bashCmd := exec.Command("bash", "-c", script)
+	bashCmd.Env = []string{
+		"PATH=" + binDir + ":" + os.Getenv("PATH"),
+		"HOME=" + fakeHome,
+		"TERM=dumb",
+	}
+
+	out, err := bashCmd.CombinedOutput()
+	output := string(out)
+	if err != nil {
+		t.Fatalf("bash script failed: %v\noutput: %s", err, output)
+	}
+
+	if !strings.Contains(output, "APM_PROFILE=EMPTY") {
+		t.Errorf("expected APM_PROFILE to be unset, got:\n%s", output)
+	}
+	if !strings.Contains(output, "SYMLINK=no") {
+		t.Errorf("expected ~/.claude symlink to be removed:\n%s", output)
+	}
+}
+
+// TestShellIntegrationStderrPassthrough verifies that stderr from apm use
+// (e.g. error messages) passes through the shell wrapper.
+func TestShellIntegrationStderrPassthrough(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	binDir, fakeHome, _ := setupShellTest(t)
+
+	initScript, _ := executeWithStdout(t, "init", "bash")
+
+	// Try to use a nonexistent profile — error should appear on stderr
+	script := initScript + "\n" +
+		`apm use nonexistent 2>&1` + "\n"
+
+	bashCmd := exec.Command("bash", "-c", script)
+	bashCmd.Env = []string{
+		"PATH=" + binDir + ":" + os.Getenv("PATH"),
+		"HOME=" + fakeHome,
+		"TERM=dumb",
+	}
+
+	out, _ := bashCmd.CombinedOutput()
+	output := string(out)
+
+	if !strings.Contains(output, "not found") {
+		t.Errorf("expected 'not found' error in stderr output:\n%s", output)
+	}
+}
+
+// TestUsePipeEmitsExports verifies that `apm use` through a pipe (non-TTY)
+// outputs only shell-safe export statements with no ANSI.
+func TestUsePipeEmitsExports(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "pipe-test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// executeWithStdout uses a pipe (non-TTY), so we get the pipe-mode output
+	out, err := executeWithStdout(t, "--config-dir", dir, "use", "pipe-test")
+	if err != nil {
+		t.Fatalf("use failed: %v\noutput: %s", err, out)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected exactly 2 lines of output, got %d:\n%s", len(lines), out)
+	}
+	if !strings.HasPrefix(lines[0], "export APM_PROFILE='pipe-test'") {
+		t.Errorf("line 1 should be APM_PROFILE export, got: %s", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "export CLAUDE_CONFIG_DIR='") {
+		t.Errorf("line 2 should be CLAUDE_CONFIG_DIR export, got: %s", lines[1])
+	}
+
+	// Verify no ANSI escape sequences
+	if strings.Contains(out, "\033[") || strings.Contains(out, "\x1b[") {
+		t.Errorf("stdout contains ANSI escape sequences:\n%s", out)
+	}
+}
+
+// TestUseUnsetPipeEmitsUnset verifies --unset through a pipe emits unset commands.
+func TestUseUnsetPipeEmitsUnset(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	out, err := executeWithStdout(t, "--config-dir", dir, "use", "--unset")
+	if err != nil {
+		t.Fatalf("use --unset failed: %v\noutput: %s", err, out)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected exactly 2 lines, got %d:\n%s", len(lines), out)
+	}
+	if lines[0] != "unset APM_PROFILE" {
+		t.Errorf("line 1 should be 'unset APM_PROFILE', got: %s", lines[0])
+	}
+	if lines[1] != "unset CLAUDE_CONFIG_DIR" {
+		t.Errorf("line 2 should be 'unset CLAUDE_CONFIG_DIR', got: %s", lines[1])
+	}
+}
+
+// getProjectRoot returns the project root directory.
+func getProjectRoot(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
 }

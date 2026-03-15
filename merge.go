@@ -1,4 +1,4 @@
-package merge
+package main
 
 import (
 	"encoding/json"
@@ -19,9 +19,9 @@ var objectMergeKeys = map[string]bool{
 	"enabledPlugins": true,
 }
 
-// Settings deep-merges common and profile settings.
+// mergeSettings deep-merges common and profile settings.
 // Profile values override common. Null values delete keys.
-func Settings(common, profile map[string]any) map[string]any {
+func mergeSettings(common, profile map[string]any) map[string]any {
 	result := make(map[string]any)
 	deepMerge(result, common, "")
 	deepMerge(result, profile, "")
@@ -184,9 +184,9 @@ func unionStrings(a, b []any) []any {
 	return result
 }
 
-// LoadJSON reads a JSON file into map[string]any.
+// loadJSON reads a JSON file into map[string]any.
 // Returns empty map if file doesn't exist.
-func LoadJSON(path string) (map[string]any, error) {
+func loadJSON(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -201,22 +201,12 @@ func LoadJSON(path string) (map[string]any, error) {
 	return result, nil
 }
 
-// WriteJSON writes map[string]any to a JSON file with indentation.
-// Uses atomic write (temp file + rename).
-func WriteJSON(path string, data map[string]any) error {
+// writeJSON writes map[string]any to a JSON file with indentation.
+func writeJSON(path string, data map[string]any) error {
 	out, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling JSON for %s: %w", path, err)
 	}
 	out = append(out, '\n')
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return fmt.Errorf("writing temp file %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp) // clean up orphaned temp file
-		return fmt.Errorf("renaming %s to %s: %w", tmp, path, err)
-	}
-	return nil
+	return atomicWriteFile(path, out, 0o644)
 }

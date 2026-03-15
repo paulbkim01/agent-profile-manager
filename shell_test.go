@@ -1,4 +1,4 @@
-package shell
+package main
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 )
 
 func TestInitScriptBash(t *testing.T) {
-	script, err := InitScript("bash")
+	script, err := shellInitScript("bash")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestInitScriptBash(t *testing.T) {
 }
 
 func TestInitScriptZsh(t *testing.T) {
-	script, err := InitScript("zsh")
+	script, err := shellInitScript("zsh")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestInitScriptZsh(t *testing.T) {
 }
 
 func TestInitScriptUnsupported(t *testing.T) {
-	_, err := InitScript("fish")
+	_, err := shellInitScript("fish")
 	if err == nil {
 		t.Fatal("expected error for unsupported shell")
 	}
@@ -67,7 +67,7 @@ func TestInitScriptUnsupported(t *testing.T) {
 }
 
 func TestInitScriptEmpty(t *testing.T) {
-	_, err := InitScript("")
+	_, err := shellInitScript("")
 	if err == nil {
 		t.Fatal("expected error for empty shell type")
 	}

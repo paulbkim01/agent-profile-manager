@@ -1,30 +1,17 @@
-package generate
+package main
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/paulbkim/agent-profile-manager/internal/config"
 )
 
-func setup(t *testing.T) *config.Config {
+func setupGenerateTest(t *testing.T) *Config {
 	t.Helper()
-	tmp := t.TempDir()
-	cfg := &config.Config{
-		APMDir:       filepath.Join(tmp, "apm"),
-		ClaudeDir:    filepath.Join(tmp, ".claude"),
-		CommonDir:    filepath.Join(tmp, "apm", "common"),
-		ProfilesDir:  filepath.Join(tmp, "apm", "profiles"),
-		GeneratedDir: filepath.Join(tmp, "apm", "generated"),
-		ConfigPath:   filepath.Join(tmp, "apm", "config.yaml"),
-	}
-	if err := cfg.EnsureDirs(); err != nil {
-		t.Fatalf("EnsureDirs: %v", err)
-	}
+	cfg := newTestConfig(t)
 
-	// Mock ~/.claude/
+	// Mock ~/.claude/ (backup — should NOT leak into generated dirs)
 	claude := cfg.ClaudeDir
 	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatalf("creating claude dir: %v", err)
@@ -34,14 +21,6 @@ func setup(t *testing.T) *config.Config {
 	}
 	if err := os.WriteFile(filepath.Join(claude, "history.jsonl"), []byte(""), 0o644); err != nil {
 		t.Fatalf("writing history.jsonl: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(claude, "settings.local.json"), []byte(`{}`), 0o644); err != nil {
-		t.Fatalf("writing settings.local.json: %v", err)
-	}
-	for _, dir := range []string{"skills", "plugins", "sessions", "projects"} {
-		if err := os.MkdirAll(filepath.Join(claude, dir), 0o755); err != nil {
-			t.Fatalf("creating claude %s dir: %v", dir, err)
-		}
 	}
 
 	// Common settings
@@ -73,9 +52,9 @@ func setup(t *testing.T) *config.Config {
 }
 
 func TestGenerate(t *testing.T) {
-	cfg := setup(t)
+	cfg := setupGenerateTest(t)
 
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,16 +91,10 @@ func TestGenerate(t *testing.T) {
 		t.Errorf("expected 3 permissions, got %d: %v", len(allow), allow)
 	}
 
-	// Check shared items are symlinked
-	for _, shared := range []string{"history.jsonl", "settings.local.json", "plugins", "sessions", "projects"} {
-		link := filepath.Join(genDir, shared)
-		fi, err := os.Lstat(link)
-		if err != nil {
-			t.Errorf("expected symlink for %s: %v", shared, err)
-			continue
-		}
-		if fi.Mode()&os.ModeSymlink == 0 {
-			t.Errorf("expected %s to be a symlink", shared)
+	// Backup items should NOT appear in generated dir
+	for _, backupOnly := range []string{"history.jsonl"} {
+		if _, err := os.Lstat(filepath.Join(genDir, backupOnly)); err == nil {
+			t.Errorf("%s should not be in generated dir (backup only)", backupOnly)
 		}
 	}
 
@@ -132,7 +105,7 @@ func TestGenerate(t *testing.T) {
 			t.Errorf("expected %s dir: %v", dir, err)
 			continue
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
+		if isSymlink(fi) {
 			t.Errorf("%s should be a real directory, not a symlink", dir)
 		}
 	}
@@ -144,13 +117,13 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestGenerateRebuilds(t *testing.T) {
-	cfg := setup(t)
+	cfg := setupGenerateTest(t)
 
 	// Generate twice -- should clean and rebuild
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatalf("first generate: %v", err)
 	}
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatalf("second generate: %v", err)
 	}
 
@@ -161,13 +134,13 @@ func TestGenerateRebuilds(t *testing.T) {
 }
 
 func TestGenerateMissingClaude(t *testing.T) {
-	cfg := setup(t)
+	cfg := setupGenerateTest(t)
 	if err := os.RemoveAll(cfg.ClaudeDir); err != nil {
 		t.Fatalf("removing claude dir: %v", err)
 	}
 
 	// Should not fail, just skip symlinks
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,16 +152,16 @@ func TestGenerateMissingClaude(t *testing.T) {
 }
 
 func TestGenerateMissingProfile(t *testing.T) {
-	cfg := setup(t)
+	cfg := setupGenerateTest(t)
 
-	err := Profile(cfg, "nonexistent")
+	err := generateProfile(cfg, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent profile")
 	}
 }
 
 func TestGenerateMergeDirOverride(t *testing.T) {
-	cfg := setup(t)
+	cfg := setupGenerateTest(t)
 
 	// Add a skill to common
 	commonSkill := filepath.Join(cfg.CommonDir, "skills", "shared-skill.md")
@@ -208,7 +181,7 @@ func TestGenerateMergeDirOverride(t *testing.T) {
 		t.Fatalf("writing common-only skill: %v", err)
 	}
 
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,36 +215,100 @@ func TestGenerateMergeDirOverride(t *testing.T) {
 	}
 }
 
-func TestGenerateSkipsBackupFiles(t *testing.T) {
-	cfg := setup(t)
+func TestGenerateBackupDoesNotLeak(t *testing.T) {
+	cfg := setupGenerateTest(t)
 
-	// Create backup files in ~/.claude/
-	if err := os.WriteFile(filepath.Join(cfg.ClaudeDir, "settings.json.work"), []byte("{}"), 0o644); err != nil {
-		t.Fatalf("writing .work file: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(cfg.ClaudeDir, "settings.json.backup"), []byte("{}"), 0o644); err != nil {
-		t.Fatalf("writing .backup file: %v", err)
+	// Add extra files to backup (claude dir) — none should leak
+	for _, name := range []string{"credentials.json", "cost_history.json", "sessions"} {
+		path := filepath.Join(cfg.ClaudeDir, name)
+		if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
 	}
 
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatal(err)
 	}
 
 	genDir := cfg.GeneratedProfileDir("work")
 
-	// Backup files should NOT be symlinked
-	if _, err := os.Lstat(filepath.Join(genDir, "settings.json.work")); err == nil {
-		t.Error(".work file should not be symlinked into generated dir")
+	for _, name := range []string{"credentials.json", "cost_history.json", "sessions", "history.jsonl"} {
+		if _, err := os.Lstat(filepath.Join(genDir, name)); err == nil {
+			t.Errorf("%s should not be in generated dir (backup does not leak)", name)
+		}
 	}
-	if _, err := os.Lstat(filepath.Join(genDir, "settings.json.backup")); err == nil {
-		t.Error(".backup file should not be symlinked into generated dir")
+}
+
+func TestGenerateExtrasFromCommonAndProfile(t *testing.T) {
+	cfg := setupGenerateTest(t)
+
+	// Add an extra file to common
+	if err := os.WriteFile(filepath.Join(cfg.CommonDir, "CLAUDE.md"), []byte("# shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add an extra file to profile
+	profDir := cfg.ProfileDir("work")
+	if err := os.WriteFile(filepath.Join(profDir, "credentials.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	genDir := cfg.GeneratedProfileDir("work")
+
+	// Common extra should be symlinked
+	fi, err := os.Lstat(filepath.Join(genDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("expected CLAUDE.md from common: %v", err)
+	}
+	if !isSymlink(fi) {
+		t.Error("CLAUDE.md should be a symlink")
+	}
+
+	// Profile extra should be symlinked
+	fi, err = os.Lstat(filepath.Join(genDir, "credentials.json"))
+	if err != nil {
+		t.Fatalf("expected credentials.json from profile: %v", err)
+	}
+	if !isSymlink(fi) {
+		t.Error("credentials.json should be a symlink")
+	}
+}
+
+func TestGenerateProfileExtrasOverrideCommon(t *testing.T) {
+	cfg := setupGenerateTest(t)
+
+	// Same file in both common and profile — profile wins
+	if err := os.WriteFile(filepath.Join(cfg.CommonDir, "CLAUDE.md"), []byte("common"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profDir := cfg.ProfileDir("work")
+	if err := os.WriteFile(filepath.Join(profDir, "CLAUDE.md"), []byte("profile"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := generateProfile(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	genDir := cfg.GeneratedProfileDir("work")
+	target, err := os.Readlink(filepath.Join(genDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("readlink CLAUDE.md: %v", err)
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "profile" {
+		t.Errorf("expected profile CLAUDE.md to win, got %q", string(data))
 	}
 }
 
 func TestGenerateMetaHash(t *testing.T) {
-	cfg := setup(t)
+	cfg := setupGenerateTest(t)
 
-	if err := Profile(cfg, "work"); err != nil {
+	if err := generateProfile(cfg, "work"); err != nil {
 		t.Fatal(err)
 	}
 
