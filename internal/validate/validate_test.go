@@ -100,8 +100,8 @@ func TestSettingsJSON(t *testing.T) {
 		t.Error("expected error for string scalar")
 	}
 
-	// Missing file
-	if err := SettingsJSON("/nonexistent"); err == nil {
-		t.Error("expected error for missing file")
+	// Missing file is valid (treated as empty {})
+	if err := SettingsJSON("/nonexistent"); err != nil {
+		t.Errorf("expected missing file to be valid, got: %v", err)
 	}
 }

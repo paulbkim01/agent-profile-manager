@@ -2,6 +2,7 @@ package validate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -36,6 +37,9 @@ func ProfileName(name string) error {
 func SettingsJSON(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // missing file is valid (treated as empty {})
+		}
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
 	var obj map[string]any
