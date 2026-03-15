@@ -136,6 +136,34 @@ func TestCreateDuplicate(t *testing.T) {
 	}
 }
 
+func TestCreateDuplicateWithDefault(t *testing.T) {
+	dir := setupTestEnv(t)
+
+	// Create first with --default
+	_, err := executeWithStdout(t, "--config-dir", dir, "create", "dup", "--default")
+	if err != nil {
+		t.Fatalf("first create failed: %v", err)
+	}
+
+	// Duplicate with --default should fail without touching config
+	_, err = executeWithStdout(t, "--config-dir", dir, "create", "dup", "--default")
+	if err == nil {
+		t.Fatal("expected error creating duplicate profile")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' error, got: %v", err)
+	}
+
+	// Config should still have original default
+	configData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading config.yaml: %v", err)
+	}
+	if !strings.Contains(string(configData), "default_profile: dup") {
+		t.Errorf("expected original default preserved, got: %s", string(configData))
+	}
+}
+
 func TestCreateInvalidName(t *testing.T) {
 	dir := setupTestEnv(t)
 

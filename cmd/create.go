@@ -45,6 +45,7 @@ var createCmd = &cobra.Command{
 
 		fmt.Printf("Created profile '%s'\n", name)
 
+		// --default: generate + set as global default, skip shell activation hints
 		if createDefault {
 			if err := generate.Profile(cfg, name); err != nil {
 				return fmt.Errorf("generating profile: %w", err)
