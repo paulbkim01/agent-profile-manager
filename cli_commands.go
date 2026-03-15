@@ -84,7 +84,7 @@ var confirmOverwrite = func(name string) bool {
 func exactlyOneArg(errMsg string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			return fmt.Errorf(errMsg)
+			return errors.New(errMsg)
 		}
 		return cobra.ExactArgs(1)(cmd, args)
 	}
